@@ -1,27 +1,49 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 const DEFAULT_FIELDS = [
+  { key: "water", label: "Water", unit: "oz", enabled: true },
   { key: "calories", label: "Calories", unit: "kcal", enabled: true },
   { key: "protein", label: "Protein", unit: "g", enabled: true },
   { key: "fat", label: "Fat", unit: "g", enabled: true },
+  { key: "carbs", label: "Carbs", unit: "g", enabled: true },
   { key: "fiber", label: "Fiber", unit: "g", enabled: true },
-  { key: "carbs", label: "Carbs", unit: "g", enabled: false },
+  { key: "potassium", label: "Potassium", unit: "mg", enabled: true },
+  { key: "magnesium", label: "Magnesium", unit: "mg", enabled: true },
+  { key: "vitaminC", label: "Vitamin C", unit: "mg", enabled: true },
+  { key: "calcium", label: "Calcium", unit: "mg", enabled: true },
+  { key: "iron", label: "Iron", unit: "mg", enabled: true },
+  { key: "sodium", label: "Sodium", unit: "mg", enabled: true },
   { key: "sugar", label: "Sugar", unit: "g", enabled: false },
   { key: "saturatedFat", label: "Sat Fat", unit: "g", enabled: false },
-  { key: "sodium", label: "Sodium", unit: "mg", enabled: false },
   { key: "cholesterol", label: "Cholesterol", unit: "mg", enabled: false },
-  { key: "potassium", label: "Potassium", unit: "mg", enabled: false },
-  { key: "vitaminA", label: "Vitamin A", unit: "%DV", enabled: false },
-  { key: "vitaminC", label: "Vitamin C", unit: "%DV", enabled: false },
-  { key: "calcium", label: "Calcium", unit: "%DV", enabled: false },
-  { key: "iron", label: "Iron", unit: "%DV", enabled: false },
+  { key: "vitaminA", label: "Vitamin A", unit: "mcg", enabled: false },
 ];
+
+const DEFAULT_GOALS = {
+  water: 100,
+  calories: 2000,
+  protein: 150,
+  fat: 65,
+  carbs: 250,
+  fiber: 30,
+  potassium: 2600,
+  magnesium: 400,
+  vitaminC: 90,
+  calcium: 1000,
+  iron: 18,
+  sodium: 2300,
+  sugar: 50,
+  saturatedFat: 20,
+  cholesterol: 300,
+  vitaminA: 900,
+};
 
 const STORAGE_KEYS = {
   foods: "mt_foods",
   logs: "mt_logs",
   fields: "mt_fields",
   customFields: "mt_custom_fields",
+  goals: "mt_goals",
 };
 
 const TABS = ["today", "foods", "log", "stats", "settings"];
@@ -39,7 +61,8 @@ function generateId() {
 }
 
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function formatDate(str) {
@@ -130,6 +153,52 @@ function Btn({ children, onClick, variant = "primary", style: s = {}, disabled }
   return <button onClick={disabled ? undefined : onClick} style={{ ...base, ...variants[variant] }}>{children}</button>;
 }
 
+// ─── Progress Bar Component ──────────────────────────────────────
+
+function ProgressBar({ field, current, goal, isCalories }) {
+  const pct = goal > 0 ? Math.min((current / goal) * 100, 100) : 0;
+  const over = goal > 0 && current > goal;
+  const rounded = Math.round(current * 10) / 10;
+  const bgColor = isCalories ? "#E8672E" : "var(--card-bg)";
+  const textColor = isCalories ? "#fff" : "var(--text)";
+  const mutedColor = isCalories ? "rgba(255,255,255,0.6)" : "var(--text-muted)";
+  const barBg = isCalories ? "rgba(255,255,255,0.2)" : "var(--border)";
+  const barFill = isCalories ? "#fff" : over ? "#EF4444" : "#3B82F6";
+
+  return (
+    <div style={{
+      background: bgColor,
+      borderRadius: 14,
+      padding: "12px 16px",
+      marginBottom: 8,
+      boxShadow: isCalories ? "0 4px 20px rgba(232,103,46,0.25)" : "0 1px 4px rgba(0,0,0,0.04)",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: textColor }}>{field.label}</span>
+        <div style={{ fontSize: 12, color: mutedColor }}>
+          <span style={{ fontSize: isCalories ? 18 : 15, fontWeight: 700, fontFamily: "var(--font-heading)", color: textColor }}>
+            {rounded}
+          </span>
+          <span style={{ margin: "0 3px" }}>/</span>
+          <span style={{ fontWeight: 500 }}>{goal}{field.unit}</span>
+        </div>
+      </div>
+      <div style={{ height: 6, borderRadius: 3, background: barBg, overflow: "hidden" }}>
+        <div style={{
+          height: "100%",
+          width: `${pct}%`,
+          borderRadius: 3,
+          background: barFill,
+          transition: "width 0.4s ease-out",
+        }} />
+      </div>
+      <div style={{ fontSize: 11, color: mutedColor, marginTop: 4, textAlign: "right" }}>
+        {Math.round(pct)}%{over && <span style={{ color: isCalories ? "rgba(255,255,255,0.8)" : "#EF4444", marginLeft: 4 }}>over</span>}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ────────────────────────────────────────────────────
 
 export default function MacroTracker() {
@@ -138,16 +207,19 @@ export default function MacroTracker() {
   const [logs, setLogs] = useState(() => loadData(STORAGE_KEYS.logs, {}));
   const [fields, setFields] = useState(() => loadData(STORAGE_KEYS.fields, DEFAULT_FIELDS));
   const [customFields, setCustomFields] = useState(() => loadData(STORAGE_KEYS.customFields, []));
+  const [goals, setGoals] = useState(() => loadData(STORAGE_KEYS.goals, DEFAULT_GOALS));
   const [showAddFood, setShowAddFood] = useState(false);
   const [showLogEntry, setShowLogEntry] = useState(false);
   const [editFood, setEditFood] = useState(null);
   const [selectedDay, setSelectedDay] = useState(null);
   const [showAddField, setShowAddField] = useState(false);
+  const [showQuickWater, setShowQuickWater] = useState(false);
 
   useEffect(() => saveData(STORAGE_KEYS.foods, foods), [foods]);
   useEffect(() => saveData(STORAGE_KEYS.logs, logs), [logs]);
   useEffect(() => saveData(STORAGE_KEYS.fields, fields), [fields]);
   useEffect(() => saveData(STORAGE_KEYS.customFields, customFields), [customFields]);
+  useEffect(() => saveData(STORAGE_KEYS.goals, goals), [goals]);
 
   const allFields = [...fields, ...customFields];
   const enabledFields = allFields.filter(f => f.enabled);
@@ -156,16 +228,22 @@ export default function MacroTracker() {
 
   const computeTotals = useCallback((entries) => {
     const totals = {};
-    enabledFields.forEach(f => { totals[f.key] = 0; });
+    allFields.forEach(f => { totals[f.key] = 0; });
     entries.forEach(entry => {
-      const food = foods.find(f => f.id === entry.foodId);
-      if (!food) return;
-      enabledFields.forEach(f => {
-        totals[f.key] = (totals[f.key] || 0) + (food.nutrition[f.key] || 0) * entry.servings;
-      });
+      if (entry.isQuickAdd) {
+        allFields.forEach(f => {
+          totals[f.key] = (totals[f.key] || 0) + (entry.values?.[f.key] || 0);
+        });
+      } else {
+        const food = foods.find(f => f.id === entry.foodId);
+        if (!food) return;
+        allFields.forEach(f => {
+          totals[f.key] = (totals[f.key] || 0) + (food.nutrition[f.key] || 0) * entry.servings;
+        });
+      }
     });
     return totals;
-  }, [enabledFields, foods]);
+  }, [allFields, foods]);
 
   const todayTotals = computeTotals(todayEntries);
 
@@ -173,6 +251,19 @@ export default function MacroTracker() {
     const newLogs = { ...logs };
     if (!newLogs[today]) newLogs[today] = [];
     newLogs[today] = [...newLogs[today], { id: generateId(), foodId, servings, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }];
+    setLogs(newLogs);
+  }
+
+  function addQuickEntry(fieldKey, amount) {
+    const newLogs = { ...logs };
+    if (!newLogs[today]) newLogs[today] = [];
+    newLogs[today] = [...newLogs[today], {
+      id: generateId(),
+      isQuickAdd: true,
+      quickLabel: allFields.find(f => f.key === fieldKey)?.label || fieldKey,
+      values: { [fieldKey]: amount },
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    }];
     setLogs(newLogs);
   }
 
@@ -215,6 +306,10 @@ export default function MacroTracker() {
     setCustomFields(customFields.filter(f => f.key !== key));
   }
 
+  function updateGoal(key, value) {
+    setGoals({ ...goals, [key]: parseFloat(value) || 0 });
+  }
+
   const sortedDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
 
   // ─── RENDER ──────────────────────────────────────────────────
@@ -253,32 +348,22 @@ export default function MacroTracker() {
         {/* ═══ TODAY TAB ═══ */}
         {tab === "today" && (
           <>
-            {/* Totals Grid */}
-            <div style={{
-              display: "grid", gridTemplateColumns: enabledFields.length <= 2 ? "1fr 1fr" : "1fr 1fr",
-              gap: 10, marginBottom: 16,
-            }}>
-              {enabledFields.map((f, i) => (
-                <div key={f.key} style={{
-                  background: i === 0 ? "var(--accent)" : "var(--card-bg)", borderRadius: 14, padding: "14px 16px",
-                  gridColumn: i === 0 && enabledFields.length % 2 !== 0 && enabledFields.length > 1 ? "1 / -1" : undefined,
-                  boxShadow: i === 0 ? "0 4px 20px rgba(232,103,46,0.3)" : "0 1px 4px rgba(0,0,0,0.04)",
-                }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: i === 0 ? "rgba(255,255,255,0.75)" : "var(--text-muted)", marginBottom: 4 }}>
-                    {f.label}
-                  </div>
-                  <div style={{ fontSize: i === 0 ? 28 : 22, fontWeight: 700, fontFamily: "var(--font-heading)", color: i === 0 ? "#fff" : "var(--text)" }}>
-                    {Math.round((todayTotals[f.key] || 0) * 10) / 10}
-                    <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 3, fontFamily: "var(--font-body)" }}>{f.unit}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            {/* Progress Bars */}
+            {enabledFields.map(f => (
+              <ProgressBar
+                key={f.key}
+                field={f}
+                current={todayTotals[f.key] || 0}
+                goal={goals[f.key] || 0}
+                isCalories={f.key === "calories"}
+              />
+            ))}
 
-            {/* Add Entry Button */}
-            <Btn onClick={() => setShowLogEntry(true)} style={{ marginBottom: 16 }}>
-              + Log Food
-            </Btn>
+            {/* Action Buttons */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, marginBottom: 16 }}>
+              <Btn onClick={() => setShowLogEntry(true)}>+ Log Food</Btn>
+              <Btn variant="secondary" onClick={() => setShowQuickWater(true)}>+ Log Water</Btn>
+            </div>
 
             {/* Today's Entries */}
             <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 8 }}>
@@ -288,6 +373,27 @@ export default function MacroTracker() {
               <EmptyState icon="🍽" title="No entries yet" subtitle="Tap 'Log Food' to get started" />
             ) : (
               todayEntries.map(entry => {
+                if (entry.isQuickAdd) {
+                  const val = Object.entries(entry.values || {})[0];
+                  const field = allFields.find(f => f.key === val?.[0]);
+                  return (
+                    <div key={entry.id} style={{
+                      background: "var(--card-bg)", borderRadius: 12, padding: "12px 14px", marginBottom: 8,
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                    }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 600 }}>{entry.quickLabel || "Quick Add"}</div>
+                        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                          +{val?.[1]}{field?.unit || ""} · {entry.time}
+                        </div>
+                      </div>
+                      <button onClick={() => removeLogEntry(today, entry.id)} style={{
+                        background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, fontSize: 18, lineHeight: 1,
+                      }}>×</button>
+                    </div>
+                  );
+                }
                 const food = foods.find(f => f.id === entry.foodId);
                 if (!food) return null;
                 return (
@@ -336,7 +442,7 @@ export default function MacroTracker() {
                       </div>
                       <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, display: "flex", flexWrap: "wrap", gap: "6px 12px" }}>
                         {enabledFields.map(f => (
-                          <span key={f.key}>{f.label}: {food.nutrition[f.key] || 0}{f.unit}</span>
+                          food.nutrition[f.key] ? <span key={f.key}>{f.label}: {food.nutrition[f.key]}{f.unit}</span> : null
                         ))}
                       </div>
                     </div>
@@ -379,7 +485,6 @@ export default function MacroTracker() {
                     </div>
                     {isSelected && (
                       <div style={{ background: "var(--card-bg)", borderRadius: "0 0 12px 12px", padding: "0 16px 14px", borderTop: "1px solid var(--border)" }}>
-                        {/* Full totals */}
                         <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", padding: "12px 0 8px" }}>
                           {enabledFields.map(f => (
                             <div key={f.key} style={{ fontSize: 13 }}>
@@ -388,8 +493,16 @@ export default function MacroTracker() {
                             </div>
                           ))}
                         </div>
-                        {/* Individual entries */}
                         {entries.map(entry => {
+                          if (entry.isQuickAdd) {
+                            const val = Object.entries(entry.values || {})[0];
+                            return (
+                              <div key={entry.id} style={{ fontSize: 12, color: "var(--text-muted)", padding: "4px 0", display: "flex", justifyContent: "space-between" }}>
+                                <span>{entry.quickLabel} +{val?.[1]}</span>
+                                <button onClick={() => removeLogEntry(day, entry.id)} style={{ background: "none", border: "none", color: "#cc3333", cursor: "pointer", fontSize: 11, padding: 0 }}>remove</button>
+                              </div>
+                            );
+                          }
                           const food = foods.find(f => f.id === entry.foodId);
                           return (
                             <div key={entry.id} style={{ fontSize: 12, color: "var(--text-muted)", padding: "4px 0", display: "flex", justifyContent: "space-between" }}>
@@ -408,11 +521,44 @@ export default function MacroTracker() {
         )}
 
         {/* ═══ STATS TAB ═══ */}
-        {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} />}
+        {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} goals={goals} />}
 
         {/* ═══ SETTINGS TAB ═══ */}
         {tab === "settings" && (
           <>
+            {/* Daily Goals */}
+            <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
+              Daily Goals
+            </div>
+            <div style={{ background: "var(--card-bg)", borderRadius: 14, overflow: "hidden", marginBottom: 20, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+              {enabledFields.map((f, i) => (
+                <div key={f.key} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px",
+                  borderBottom: i < enabledFields.length - 1 ? "1px solid var(--border)" : "none",
+                }}>
+                  <span style={{ fontSize: 14, fontWeight: 500, minWidth: 90 }}>{f.label}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      type="number"
+                      value={goals[f.key] || ""}
+                      onChange={e => updateGoal(f.key, e.target.value)}
+                      placeholder="0"
+                      step="any"
+                      style={{
+                        width: 80, padding: "6px 8px", border: "1.5px solid var(--border)", borderRadius: 8,
+                        fontSize: 14, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
+                        outline: "none", textAlign: "right",
+                      }}
+                      onFocus={e => e.target.style.borderColor = "var(--accent)"}
+                      onBlur={e => e.target.style.borderColor = "var(--border)"}
+                    />
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", minWidth: 28 }}>{f.unit}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Nutrition Fields */}
             <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
               Nutrition Fields
             </div>
@@ -447,12 +593,67 @@ export default function MacroTracker() {
               + Add Custom Field
             </Btn>
 
+            {/* Backup & Restore */}
             <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
-              Data
+              Backup & Restore
+            </div>
+            <Btn variant="secondary" onClick={() => {
+              const backup = {
+                version: 2,
+                exportedAt: new Date().toISOString(),
+                foods, logs, fields, customFields, goals,
+              };
+              const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `macro-tracker-backup-${todayStr()}.json`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }} style={{ marginBottom: 8 }}>
+              Export Backup
+            </Btn>
+            <Btn variant="secondary" onClick={() => {
+              const input = document.createElement("input");
+              input.type = "file";
+              input.accept = ".json";
+              input.onchange = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                  try {
+                    const data = JSON.parse(ev.target.result);
+                    if (!data.foods || !data.logs || !data.fields) {
+                      alert("Invalid backup file.");
+                      return;
+                    }
+                    if (confirm("Restore from backup? This will replace all current data.")) {
+                      setFoods(data.foods);
+                      setLogs(data.logs);
+                      setFields(data.fields);
+                      setCustomFields(data.customFields || []);
+                      if (data.goals) setGoals(data.goals);
+                      alert("Backup restored successfully!");
+                    }
+                  } catch {
+                    alert("Could not read backup file.");
+                  }
+                };
+                reader.readAsText(file);
+              };
+              input.click();
+            }} style={{ marginBottom: 24 }}>
+              Import Backup
+            </Btn>
+
+            {/* Danger Zone */}
+            <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
+              Danger Zone
             </div>
             <Btn variant="danger" onClick={() => {
               if (confirm("Clear ALL data? This cannot be undone.")) {
-                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]);
+                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS);
               }
             }}>
               Reset All Data
@@ -483,6 +684,7 @@ export default function MacroTracker() {
       <AddFoodModal open={showAddFood} onClose={() => { setShowAddFood(false); setEditFood(null); }} onSave={saveFood} editFood={editFood} allFields={allFields} enabledFields={enabledFields} />
       <LogEntryModal open={showLogEntry} onClose={() => setShowLogEntry(false)} foods={foods} enabledFields={enabledFields} onAdd={addLogEntry} />
       <AddFieldModal open={showAddField} onClose={() => setShowAddField(false)} onAdd={addCustomField} />
+      <QuickWaterModal open={showQuickWater} onClose={() => setShowQuickWater(false)} onAdd={(amt) => { addQuickEntry("water", amt); setShowQuickWater(false); }} waterUnit={fields.find(f => f.key === "water")?.unit || "oz"} />
     </div>
   );
 }
@@ -500,6 +702,50 @@ function Toggle({ checked, onChange }) {
         left: checked ? 21 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
       }} />
     </div>
+  );
+}
+
+// ─── Quick Water Modal ───────────────────────────────────────────
+
+function QuickWaterModal({ open, onClose, onAdd, waterUnit }) {
+  const [amount, setAmount] = useState("");
+  const presets = [8, 12, 16, 24, 32];
+
+  useEffect(() => { if (open) setAmount(""); }, [open]);
+
+  return (
+    <Modal open={open} onClose={onClose} title="Log Water">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
+        {presets.map(oz => (
+          <button key={oz} onClick={() => onAdd(oz)} style={{
+            padding: "14px 8px", borderRadius: 12, border: "1.5px solid var(--border)", background: "var(--input-bg)",
+            cursor: "pointer", fontSize: 15, fontWeight: 600, fontFamily: "var(--font-body)", color: "var(--text)",
+            transition: "all 0.15s",
+          }}>
+            {oz} {waterUnit}
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 8 }}>
+        Or enter custom amount
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ flex: 1 }}>
+          <input
+            type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="Amount" step="any"
+            style={{
+              width: "100%", padding: "10px 12px", border: "1.5px solid var(--border)", borderRadius: 10,
+              fontSize: 15, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)", outline: "none",
+            }}
+            onFocus={e => e.target.style.borderColor = "var(--accent)"}
+            onBlur={e => e.target.style.borderColor = "var(--border)"}
+          />
+        </div>
+        <Btn onClick={() => { if (parseFloat(amount) > 0) onAdd(parseFloat(amount)); }} disabled={!amount || parseFloat(amount) <= 0} style={{ width: "auto", padding: "10px 20px" }}>
+          Add
+        </Btn>
+      </div>
+    </Modal>
   );
 }
 
@@ -656,7 +902,7 @@ function AddFieldModal({ open, onClose, onAdd }) {
 
 // ─── Stats Panel ─────────────────────────────────────────────────
 
-function StatsPanel({ logs, foods, enabledFields, computeTotals }) {
+function StatsPanel({ logs, foods, enabledFields, computeTotals, goals }) {
   const [range, setRange] = useState("7");
   const sortedDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
 
@@ -697,21 +943,32 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals }) {
             Daily Averages ({daysToUse.length} day{daysToUse.length !== 1 ? "s" : ""})
           </div>
           <div style={{ background: "var(--card-bg)", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
-            {enabledFields.map((f, i) => (
-              <div key={f.key} style={{
-                display: "flex", justifyContent: "space-between", padding: "14px 16px",
-                borderBottom: i < enabledFields.length - 1 ? "1px solid var(--border)" : "none",
-              }}>
-                <span style={{ fontSize: 14, color: "var(--text-muted)" }}>{f.label}</span>
-                <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "var(--font-heading)" }}>
-                  {Math.round(averages[f.key] * 10) / 10}
-                  <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 2, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>{f.unit}</span>
-                </span>
-              </div>
-            ))}
+            {enabledFields.map((f, i) => {
+              const avg = averages[f.key] || 0;
+              const goal = goals[f.key] || 0;
+              const pct = goal > 0 ? Math.round((avg / goal) * 100) : null;
+              return (
+                <div key={f.key} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px",
+                  borderBottom: i < enabledFields.length - 1 ? "1px solid var(--border)" : "none",
+                }}>
+                  <span style={{ fontSize: 14, color: "var(--text-muted)" }}>{f.label}</span>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "var(--font-heading)" }}>
+                      {Math.round(avg * 10) / 10}
+                      <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 2, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>{f.unit}</span>
+                    </span>
+                    {pct !== null && (
+                      <div style={{ fontSize: 11, color: pct >= 90 ? "var(--success)" : "var(--text-muted)" }}>
+                        {pct}% of goal
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
-          {/* Per-day breakdown */}
           <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", margin: "20px 0 10px" }}>
             Daily Breakdown
           </div>

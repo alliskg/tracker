@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  base: '/macro-tracker/',
+  base: '/tracker/',
   plugins: [
     react(),
     VitePWA({
@@ -17,8 +17,8 @@ export default defineConfig({
         background_color: '#FAF8F5',
         display: 'standalone',
         orientation: 'portrait',
-        start_url: '/macro-tracker/',
-        scope: '/macro-tracker/',
+        start_url: '/tracker/',
+        scope: '/tracker/',
         icons: [
           {
             src: 'icon-192.png',
