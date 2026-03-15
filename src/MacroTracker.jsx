@@ -38,12 +38,24 @@ const DEFAULT_GOALS = {
   vitaminA: 900,
 };
 
+const DEFAULT_CATEGORIES = [
+  "Vegetables",
+  "Lean Protein",
+  "Healthy Fats",
+  "Fruits",
+  "Grains",
+  "Dairy",
+  "Snacks",
+  "Other",
+];
+
 const STORAGE_KEYS = {
   foods: "mt_foods",
   logs: "mt_logs",
   fields: "mt_fields",
   customFields: "mt_custom_fields",
   goals: "mt_goals",
+  categories: "mt_categories",
 };
 
 const TABS = ["today", "foods", "log", "stats", "settings"];
@@ -214,12 +226,16 @@ export default function MacroTracker() {
   const [selectedDay, setSelectedDay] = useState(null);
   const [showAddField, setShowAddField] = useState(false);
   const [showQuickWater, setShowQuickWater] = useState(false);
+  const [categories, setCategories] = useState(() => loadData(STORAGE_KEYS.categories, DEFAULT_CATEGORIES));
+  const [showAddCategory, setShowAddCategory] = useState(false);
+  const [addFoodCategory, setAddFoodCategory] = useState(null);
 
   useEffect(() => saveData(STORAGE_KEYS.foods, foods), [foods]);
   useEffect(() => saveData(STORAGE_KEYS.logs, logs), [logs]);
   useEffect(() => saveData(STORAGE_KEYS.fields, fields), [fields]);
   useEffect(() => saveData(STORAGE_KEYS.customFields, customFields), [customFields]);
   useEffect(() => saveData(STORAGE_KEYS.goals, goals), [goals]);
+  useEffect(() => saveData(STORAGE_KEYS.categories, categories), [categories]);
 
   const allFields = [...fields, ...customFields];
   const enabledFields = allFields.filter(f => f.enabled);
@@ -423,37 +439,86 @@ export default function MacroTracker() {
         {/* ═══ FOODS TAB ═══ */}
         {tab === "foods" && (
           <>
-            <Btn onClick={() => { setEditFood(null); setShowAddFood(true); }} style={{ marginBottom: 16 }}>
+            <Btn onClick={() => { setEditFood(null); setAddFoodCategory(null); setShowAddFood(true); }} style={{ marginBottom: 16 }}>
               + Add Food Item
             </Btn>
             {foods.length === 0 ? (
               <EmptyState icon="📦" title="No foods yet" subtitle="Add your first food item to get started" />
             ) : (
-              foods.map(food => (
-                <div key={food.id} style={{
-                  background: "var(--card-bg)", borderRadius: 12, padding: "14px 16px", marginBottom: 8,
-                  boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
-                }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                    <div>
-                      <div style={{ fontSize: 15, fontWeight: 600 }}>{food.name}</div>
-                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                        Serving: {food.servingSize} {food.servingUnit}
-                      </div>
-                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, display: "flex", flexWrap: "wrap", gap: "6px 12px" }}>
-                        {enabledFields.map(f => (
-                          food.nutrition[f.key] ? <span key={f.key}>{f.label}: {food.nutrition[f.key]}{f.unit}</span> : null
-                        ))}
-                      </div>
+              categories.map(cat => {
+                const catFoods = foods.filter(f => (f.category || "Other") === cat);
+                if (catFoods.length === 0) return null;
+                return (
+                  <div key={cat} style={{ marginBottom: 20 }}>
+                    {/* Category Header */}
+                    <div style={{
+                      fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.8px",
+                      color: "var(--accent)", marginBottom: 8, paddingBottom: 6,
+                      borderBottom: "2px solid var(--accent)", display: "flex", alignItems: "center", gap: 8,
+                    }}>
+                      {cat}
+                      <span style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)", textTransform: "none", letterSpacing: 0 }}>
+                        ({catFoods.length})
+                      </span>
                     </div>
-                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                      <button onClick={() => { setEditFood(food); setShowAddFood(true); }} style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "var(--accent)", fontSize: 13, fontWeight: 600 }}>Edit</button>
-                      <button onClick={() => deleteFood(food.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#cc3333", fontSize: 13, fontWeight: 600 }}>Del</button>
-                    </div>
+                    {/* Food Items */}
+                    {catFoods.map(food => (
+                      <div key={food.id} style={{
+                        background: "var(--card-bg)", borderRadius: 12, padding: "14px 16px", marginBottom: 6,
+                        boxShadow: "0 1px 4px rgba(0,0,0,0.04)", borderLeft: "3px solid var(--accent)",
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 15, fontWeight: 600 }}>{food.name}</div>
+                            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                              Serving: {food.servingSize} {food.servingUnit}
+                            </div>
+                            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, display: "flex", flexWrap: "wrap", gap: "6px 12px" }}>
+                              {enabledFields.map(f => (
+                                food.nutrition[f.key] ? <span key={f.key}>{f.label}: {food.nutrition[f.key]}{f.unit}</span> : null
+                              ))}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                            <button onClick={() => { setEditFood(food); setShowAddFood(true); }} style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "var(--accent)", fontSize: 13, fontWeight: 600 }}>Edit</button>
+                            <button onClick={() => deleteFood(food.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#cc3333", fontSize: 13, fontWeight: 600 }}>Del</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
+            {/* Show uncategorized if any foods have categories not in the list */}
+            {(() => {
+              const uncategorized = foods.filter(f => f.category && !categories.includes(f.category));
+              if (uncategorized.length === 0) return null;
+              return (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.8px", color: "var(--text-muted)", marginBottom: 8, paddingBottom: 6, borderBottom: "2px solid var(--border)" }}>
+                    Uncategorized
+                  </div>
+                  {uncategorized.map(food => (
+                    <div key={food.id} style={{
+                      background: "var(--card-bg)", borderRadius: 12, padding: "14px 16px", marginBottom: 6,
+                      boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div>
+                          <div style={{ fontSize: 15, fontWeight: 600 }}>{food.name}</div>
+                          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>Serving: {food.servingSize} {food.servingUnit}</div>
+                        </div>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button onClick={() => { setEditFood(food); setShowAddFood(true); }} style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "var(--accent)", fontSize: 13, fontWeight: 600 }}>Edit</button>
+                          <button onClick={() => deleteFood(food.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#cc3333", fontSize: 13, fontWeight: 600 }}>Del</button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </>
         )}
 
@@ -526,6 +591,30 @@ export default function MacroTracker() {
         {/* ═══ SETTINGS TAB ═══ */}
         {tab === "settings" && (
           <>
+            {/* Categories */}
+            <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
+              Food Categories
+            </div>
+            <div style={{ background: "var(--card-bg)", borderRadius: 14, overflow: "hidden", marginBottom: 8, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+              {categories.map((cat, i) => (
+                <div key={cat} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px",
+                  borderBottom: i < categories.length - 1 ? "1px solid var(--border)" : "none",
+                }}>
+                  <span style={{ fontSize: 14, fontWeight: 500 }}>{cat}</span>
+                  <button onClick={() => {
+                    if (confirm(`Delete "${cat}" category? Foods in this category will move to "Other".`)) {
+                      setFoods(foods.map(f => f.category === cat ? { ...f, category: "Other" } : f));
+                      setCategories(categories.filter(c => c !== cat));
+                    }
+                  }} style={{ background: "none", border: "none", color: "#cc3333", cursor: "pointer", fontSize: 12, padding: "2px 6px" }}>✕</button>
+                </div>
+              ))}
+            </div>
+            <Btn variant="secondary" onClick={() => setShowAddCategory(true)} style={{ marginBottom: 24 }}>
+              + Add Category
+            </Btn>
+
             {/* Daily Goals */}
             <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
               Daily Goals
@@ -601,7 +690,7 @@ export default function MacroTracker() {
               const backup = {
                 version: 2,
                 exportedAt: new Date().toISOString(),
-                foods, logs, fields, customFields, goals,
+                foods, logs, fields, customFields, goals, categories,
               };
               const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
               const url = URL.createObjectURL(blob);
@@ -634,6 +723,7 @@ export default function MacroTracker() {
                       setFields(data.fields);
                       setCustomFields(data.customFields || []);
                       if (data.goals) setGoals(data.goals);
+                      if (data.categories) setCategories(data.categories);
                       alert("Backup restored successfully!");
                     }
                   } catch {
@@ -653,7 +743,7 @@ export default function MacroTracker() {
             </div>
             <Btn variant="danger" onClick={() => {
               if (confirm("Clear ALL data? This cannot be undone.")) {
-                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS);
+                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS); setCategories(DEFAULT_CATEGORIES);
               }
             }}>
               Reset All Data
@@ -681,10 +771,11 @@ export default function MacroTracker() {
       </div>
 
       {/* ─── Modals ──────────────────────────────────────────── */}
-      <AddFoodModal open={showAddFood} onClose={() => { setShowAddFood(false); setEditFood(null); }} onSave={saveFood} editFood={editFood} allFields={allFields} enabledFields={enabledFields} />
-      <LogEntryModal open={showLogEntry} onClose={() => setShowLogEntry(false)} foods={foods} enabledFields={enabledFields} onAdd={addLogEntry} />
+      <AddFoodModal open={showAddFood} onClose={() => { setShowAddFood(false); setEditFood(null); setAddFoodCategory(null); }} onSave={saveFood} editFood={editFood} allFields={allFields} enabledFields={enabledFields} categories={categories} defaultCategory={addFoodCategory} />
+      <LogEntryModal open={showLogEntry} onClose={() => setShowLogEntry(false)} foods={foods} enabledFields={enabledFields} onAdd={addLogEntry} categories={categories} />
       <AddFieldModal open={showAddField} onClose={() => setShowAddField(false)} onAdd={addCustomField} />
       <QuickWaterModal open={showQuickWater} onClose={() => setShowQuickWater(false)} onAdd={(amt) => { addQuickEntry("water", amt); setShowQuickWater(false); }} waterUnit={fields.find(f => f.key === "water")?.unit || "oz"} />
+      <AddCategoryModal open={showAddCategory} onClose={() => setShowAddCategory(false)} onAdd={(name) => { setCategories([...categories, name]); setShowAddCategory(false); }} existingCategories={categories} />
     </div>
   );
 }
@@ -751,11 +842,12 @@ function QuickWaterModal({ open, onClose, onAdd, waterUnit }) {
 
 // ─── Add/Edit Food Modal ─────────────────────────────────────────
 
-function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledFields }) {
+function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledFields, categories, defaultCategory }) {
   const [name, setName] = useState("");
   const [servingSize, setServingSize] = useState("");
   const [servingUnit, setServingUnit] = useState("");
   const [nutrition, setNutrition] = useState({});
+  const [category, setCategory] = useState("Other");
 
   useEffect(() => {
     if (editFood) {
@@ -763,10 +855,12 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
       setServingSize(String(editFood.servingSize));
       setServingUnit(editFood.servingUnit);
       setNutrition(editFood.nutrition || {});
+      setCategory(editFood.category || "Other");
     } else {
       setName(""); setServingSize(""); setServingUnit(""); setNutrition({});
+      setCategory(defaultCategory || "Other");
     }
-  }, [editFood, open]);
+  }, [editFood, open, defaultCategory]);
 
   function handleSave() {
     if (!name.trim()) return;
@@ -776,12 +870,32 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
       servingSize: parseFloat(servingSize) || 1,
       servingUnit: servingUnit.trim() || "serving",
       nutrition,
+      category,
     });
   }
 
   return (
     <Modal open={open} onClose={onClose} title={editFood ? "Edit Food" : "Add Food"}>
       <FieldInput label="Food Name" value={name} onChange={setName} placeholder="e.g. Olive Oil" />
+      {/* Category Picker */}
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: "var(--text-muted)", fontFamily: "var(--font-body)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+          Category
+        </label>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {categories.map(cat => (
+            <button key={cat} onClick={() => setCategory(cat)} style={{
+              padding: "6px 12px", borderRadius: 20, fontSize: 13, fontWeight: 600, cursor: "pointer",
+              border: category === cat ? "2px solid var(--accent)" : "1.5px solid var(--border)",
+              background: category === cat ? "var(--accent)" : "var(--input-bg)",
+              color: category === cat ? "#fff" : "var(--text)",
+              fontFamily: "var(--font-body)", transition: "all 0.15s",
+            }}>
+              {cat}
+            </button>
+          ))}
+        </div>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <FieldInput label="Serving Size" value={servingSize} onChange={setServingSize} type="number" placeholder="1" step="any" />
         <FieldInput label="Serving Unit" value={servingUnit} onChange={setServingUnit} placeholder="tbsp" />
@@ -804,7 +918,7 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
 
 // ─── Log Entry Modal ─────────────────────────────────────────────
 
-function LogEntryModal({ open, onClose, foods, enabledFields, onAdd }) {
+function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories }) {
   const [search, setSearch] = useState("");
   const [selectedFood, setSelectedFood] = useState(null);
   const [servings, setServings] = useState("1");
@@ -812,6 +926,7 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd }) {
   useEffect(() => { if (open) { setSearch(""); setSelectedFood(null); setServings("1"); } }, [open]);
 
   const filtered = foods.filter(f => f.name.toLowerCase().includes(search.toLowerCase()));
+  const isSearching = search.trim().length > 0;
 
   function handleAdd() {
     if (!selectedFood) return;
@@ -819,30 +934,45 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd }) {
     onClose();
   }
 
+  const FoodRow = ({ food }) => (
+    <div onClick={() => setSelectedFood(food)} style={{
+      padding: "12px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 4,
+      background: "var(--input-bg)", transition: "background 0.15s",
+    }}>
+      <div style={{ fontSize: 14, fontWeight: 600 }}>{food.name}</div>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+        {food.servingSize} {food.servingUnit}
+        {enabledFields.length > 0 && " · "}
+        {enabledFields.slice(0, 3).map(f => `${food.nutrition[f.key] || 0}${f.unit}`).join(" / ")}
+      </div>
+    </div>
+  );
+
   return (
     <Modal open={open} onClose={onClose} title="Log Food">
       {!selectedFood ? (
         <>
           <FieldInput label="Search Foods" value={search} onChange={setSearch} placeholder="Type to search..." />
-          <div style={{ maxHeight: 280, overflowY: "auto" }}>
+          <div style={{ maxHeight: 320, overflowY: "auto" }}>
             {filtered.length === 0 ? (
               <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)", fontSize: 13 }}>
                 {foods.length === 0 ? "Add foods in the Foods tab first" : "No matches found"}
               </div>
+            ) : isSearching ? (
+              filtered.map(food => <FoodRow key={food.id} food={food} />)
             ) : (
-              filtered.map(food => (
-                <div key={food.id} onClick={() => setSelectedFood(food)} style={{
-                  padding: "12px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 4,
-                  background: "var(--input-bg)", transition: "background 0.15s",
-                }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{food.name}</div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                    {food.servingSize} {food.servingUnit}
-                    {enabledFields.length > 0 && " · "}
-                    {enabledFields.slice(0, 3).map(f => `${food.nutrition[f.key] || 0}${f.unit}`).join(" / ")}
+              categories.map(cat => {
+                const catFoods = filtered.filter(f => (f.category || "Other") === cat);
+                if (catFoods.length === 0) return null;
+                return (
+                  <div key={cat}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", padding: "8px 4px 4px", marginTop: 4 }}>
+                      {cat}
+                    </div>
+                    {catFoods.map(food => <FoodRow key={food.id} food={food} />)}
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </>
@@ -895,6 +1025,30 @@ function AddFieldModal({ open, onClose, onAdd }) {
       <FieldInput label="Unit" value={unit} onChange={setUnit} placeholder="e.g. mg" />
       <Btn onClick={() => { if (label.trim()) onAdd(label.trim(), unit.trim() || "g"); }} disabled={!label.trim()}>
         Add Field
+      </Btn>
+    </Modal>
+  );
+}
+
+// ─── Add Category Modal ──────────────────────────────────────────
+
+function AddCategoryModal({ open, onClose, onAdd, existingCategories }) {
+  const [name, setName] = useState("");
+
+  useEffect(() => { if (open) setName(""); }, [open]);
+
+  const isDuplicate = existingCategories.some(c => c.toLowerCase() === name.trim().toLowerCase());
+
+  return (
+    <Modal open={open} onClose={onClose} title="Add Category">
+      <FieldInput label="Category Name" value={name} onChange={setName} placeholder="e.g. Supplements" />
+      {isDuplicate && (
+        <div style={{ fontSize: 12, color: "#EF4444", marginTop: -8, marginBottom: 12 }}>
+          This category already exists.
+        </div>
+      )}
+      <Btn onClick={() => { if (name.trim() && !isDuplicate) onAdd(name.trim()); }} disabled={!name.trim() || isDuplicate}>
+        Add Category
       </Btn>
     </Modal>
   );
