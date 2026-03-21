@@ -56,12 +56,15 @@ const STORAGE_KEYS = {
   customFields: "mt_custom_fields",
   goals: "mt_goals",
   categories: "mt_categories",
+  weightLog: "mt_weight_log",
+  bounds: "mt_bounds",
 };
 
-const TABS = ["today", "foods", "log", "stats", "settings"];
-const TAB_LABELS = { today: "Today", foods: "Foods", log: "Log", stats: "Stats", settings: "Settings" };
+const TABS = ["today", "weight", "foods", "log", "stats", "settings"];
+const TAB_LABELS = { today: "Today", weight: "Weight", foods: "Foods", log: "Log", stats: "Stats", settings: "Settings" };
 const TAB_ICONS = {
   today: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
+  weight: "M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3",
   foods: "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
   log: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
   stats: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
@@ -91,6 +94,89 @@ function loadData(key, fallback) {
 
 function saveData(key, data) {
   try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
+}
+
+// ─── Weight Smoothing & TDEE ─────────────────────────────────────
+
+function computeSmoothedWeights(weightLog) {
+  // weightLog is { "2026-03-01": 185.2, "2026-03-02": 184.8, ... }
+  const sortedDays = Object.keys(weightLog).sort();
+  if (sortedDays.length === 0) return [];
+
+  const alpha = 0.1; // EMA smoothing factor — lower = smoother
+  const results = [];
+  let ema = weightLog[sortedDays[0]];
+
+  for (const day of sortedDays) {
+    const raw = weightLog[day];
+    ema = alpha * raw + (1 - alpha) * ema;
+    results.push({ date: day, raw, smoothed: Math.round(ema * 100) / 100 });
+  }
+  return results;
+}
+
+function computeTDEE(smoothedWeights, logs, allFields, foods, numDays = 28) {
+  // Need at least 2 weeks of data for meaningful results
+  if (smoothedWeights.length < 14) return null;
+
+  const endIdx = smoothedWeights.length - 1;
+  const startIdx = Math.max(0, endIdx - numDays);
+  const startEntry = smoothedWeights[startIdx];
+  const endEntry = smoothedWeights[endIdx];
+
+  const startDate = new Date(startEntry.date + "T12:00:00");
+  const endDate = new Date(endEntry.date + "T12:00:00");
+  const actualDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
+  if (actualDays < 14) return null;
+
+  const weightChangeLbs = endEntry.smoothed - startEntry.smoothed;
+  // 3500 kcal per pound of body weight change (widely used approximation)
+  const caloricSurplusDeficit = (weightChangeLbs * 3500) / actualDays;
+
+  // Compute average daily calories consumed over the same period
+  const daysInRange = [];
+  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+    const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    daysInRange.push(ds);
+  }
+
+  let totalCalories = 0;
+  let daysWithFood = 0;
+  for (const day of daysInRange) {
+    const entries = logs[day];
+    if (!entries || entries.length === 0) continue;
+    let dayCals = 0;
+    for (const entry of entries) {
+      if (entry.isQuickAdd) {
+        dayCals += entry.values?.calories || 0;
+      } else {
+        const food = foods.find(f => f.id === entry.foodId);
+        if (food) dayCals += (food.nutrition?.calories || 0) * entry.servings;
+      }
+    }
+    totalCalories += dayCals;
+    daysWithFood++;
+  }
+
+  if (daysWithFood < 7) return null; // Need at least a week of food logging
+
+  const avgDailyCalories = totalCalories / daysWithFood;
+  // TDEE = what you ate - the deficit (or + the surplus)
+  // If you lost weight, caloricSurplusDeficit is negative, so TDEE > intake
+  const tdee = avgDailyCalories - caloricSurplusDeficit;
+
+  const weeklyRateLbs = (weightChangeLbs / actualDays) * 7;
+
+  return {
+    tdee: Math.round(tdee),
+    avgDailyCalories: Math.round(avgDailyCalories),
+    weightChangeLbs: Math.round(weightChangeLbs * 100) / 100,
+    weeklyRateLbs: Math.round(weeklyRateLbs * 100) / 100,
+    daysAnalyzed: Math.round(actualDays),
+    daysWithFoodLog: daysWithFood,
+    startWeight: startEntry.smoothed,
+    endWeight: endEntry.smoothed,
+  };
 }
 
 // ─── Reusable Components ─────────────────────────────────────────
@@ -167,15 +253,34 @@ function Btn({ children, onClick, variant = "primary", style: s = {}, disabled }
 
 // ─── Progress Bar Component ──────────────────────────────────────
 
-function ProgressBar({ field, current, goal, isCalories }) {
-  const pct = goal > 0 ? Math.min((current / goal) * 100, 100) : 0;
-  const over = goal > 0 && current > goal;
+function ProgressBar({ field, current, goal, isCalories, lower, upper }) {
+  const hasLower = lower !== undefined && lower > 0;
+  const hasUpper = upper !== undefined && upper > 0;
+  // Bar fills up to the upper bound if set, otherwise the goal
+  const barMax = hasUpper ? upper : (goal > 0 ? goal : Math.max(current, 1));
+  const pct = barMax > 0 ? Math.min((current / barMax) * 100, 100) : 0;
+  const over = barMax > 0 && current > barMax;
   const rounded = Math.round(current * 10) / 10;
   const bgColor = isCalories ? "#E8672E" : "var(--card-bg)";
   const textColor = isCalories ? "#fff" : "var(--text)";
   const mutedColor = isCalories ? "rgba(255,255,255,0.6)" : "var(--text-muted)";
   const barBg = isCalories ? "rgba(255,255,255,0.2)" : "var(--border)";
-  const barFill = isCalories ? "#fff" : over ? "#EF4444" : "#3B82F6";
+
+  const inRange = (!hasLower || current >= lower) && (!hasUpper || current <= upper);
+
+  let barFill;
+  if (isCalories) {
+    barFill = "#fff";
+  } else if (hasLower || hasUpper) {
+    barFill = inRange ? "#22C55E" : "#B0B8C4";
+  } else {
+    barFill = "#3B82F6";
+  }
+
+  // Tick positions relative to barMax
+  const lowerPct = (hasLower && barMax > 0) ? Math.min((lower / barMax) * 100, 100) : null;
+  const upperPct = (hasUpper && barMax > 0) ? 100 : null; // upper is always at the end since it IS the max
+  const tickColor = isCalories ? "rgba(255,255,255,0.5)" : "#555";
 
   return (
     <div style={{
@@ -192,20 +297,42 @@ function ProgressBar({ field, current, goal, isCalories }) {
             {rounded}
           </span>
           <span style={{ margin: "0 3px" }}>/</span>
-          <span style={{ fontWeight: 500 }}>{goal}{field.unit}</span>
+          <span style={{ fontWeight: 500 }}>{hasUpper ? upper : goal}{field.unit}</span>
         </div>
       </div>
-      <div style={{ height: 6, borderRadius: 3, background: barBg, overflow: "hidden" }}>
+      {/* Bar with markers */}
+      <div style={{ position: "relative", height: 6, borderRadius: 3, background: barBg, overflow: "hidden" }}>
         <div style={{
           height: "100%",
           width: `${pct}%`,
           borderRadius: 3,
           background: barFill,
-          transition: "width 0.4s ease-out",
+          transition: "width 0.4s ease-out, background 0.3s ease",
         }} />
+        {/* Lower bound tick */}
+        {lowerPct !== null && (
+          <div style={{
+            position: "absolute", top: 0, left: `${lowerPct}%`, transform: "translateX(-50%)",
+            width: 2, height: 6, zIndex: 2,
+            background: tickColor,
+          }} />
+        )}
       </div>
-      <div style={{ fontSize: 11, color: mutedColor, marginTop: 4, textAlign: "right" }}>
-        {Math.round(pct)}%{over && <span style={{ color: isCalories ? "rgba(255,255,255,0.8)" : "#EF4444", marginLeft: 4 }}>over</span>}
+      {/* Bottom row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+        <div style={{ fontSize: 10, color: mutedColor }}>
+          {hasLower && <span style={{ marginRight: 8 }}>▸ {lower}{field.unit}</span>}
+          {hasUpper && <span>◂ {upper}{field.unit}</span>}
+        </div>
+        <div style={{ fontSize: 11, color: mutedColor }}>
+          {Math.round(pct)}%
+          {over && <span style={{ color: isCalories ? "rgba(255,255,255,0.8)" : "var(--text-muted)", marginLeft: 4 }}>over</span>}
+          {!isCalories && (hasLower || hasUpper) && !over && (
+            inRange
+              ? <span style={{ color: "#22C55E", marginLeft: 4 }}>in range</span>
+              : <span style={{ color: "#999", marginLeft: 4 }}>out of range</span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -229,6 +356,8 @@ export default function MacroTracker() {
   const [categories, setCategories] = useState(() => loadData(STORAGE_KEYS.categories, DEFAULT_CATEGORIES));
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [addFoodCategory, setAddFoodCategory] = useState(null);
+  const [weightLog, setWeightLog] = useState(() => loadData(STORAGE_KEYS.weightLog, {}));
+  const [bounds, setBounds] = useState(() => loadData(STORAGE_KEYS.bounds, {}));
 
   useEffect(() => saveData(STORAGE_KEYS.foods, foods), [foods]);
   useEffect(() => saveData(STORAGE_KEYS.logs, logs), [logs]);
@@ -236,6 +365,8 @@ export default function MacroTracker() {
   useEffect(() => saveData(STORAGE_KEYS.customFields, customFields), [customFields]);
   useEffect(() => saveData(STORAGE_KEYS.goals, goals), [goals]);
   useEffect(() => saveData(STORAGE_KEYS.categories, categories), [categories]);
+  useEffect(() => saveData(STORAGE_KEYS.weightLog, weightLog), [weightLog]);
+  useEffect(() => saveData(STORAGE_KEYS.bounds, bounds), [bounds]);
 
   const allFields = [...fields, ...customFields];
   const enabledFields = allFields.filter(f => f.enabled);
@@ -326,6 +457,11 @@ export default function MacroTracker() {
     setGoals({ ...goals, [key]: parseFloat(value) || 0 });
   }
 
+  function updateBound(key, side, value) {
+    const current = bounds[key] || {};
+    setBounds({ ...bounds, [key]: { ...current, [side]: value === "" ? undefined : (parseFloat(value) || 0) } });
+  }
+
   const sortedDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
 
   // ─── RENDER ──────────────────────────────────────────────────
@@ -372,6 +508,8 @@ export default function MacroTracker() {
                 current={todayTotals[f.key] || 0}
                 goal={goals[f.key] || 0}
                 isCalories={f.key === "calories"}
+                lower={bounds[f.key]?.lower}
+                upper={bounds[f.key]?.upper}
               />
             ))}
 
@@ -585,8 +723,11 @@ export default function MacroTracker() {
           </>
         )}
 
+        {/* ═══ WEIGHT TAB ═══ */}
+        {tab === "weight" && <WeightPanel weightLog={weightLog} setWeightLog={setWeightLog} logs={logs} foods={foods} allFields={allFields} />}
+
         {/* ═══ STATS TAB ═══ */}
-        {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} goals={goals} />}
+        {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} goals={goals} weightLog={weightLog} allFields={allFields} />}
 
         {/* ═══ SETTINGS TAB ═══ */}
         {tab === "settings" && (
@@ -617,34 +758,78 @@ export default function MacroTracker() {
 
             {/* Daily Goals */}
             <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
-              Daily Goals
+              Daily Goals & Bounds
             </div>
             <div style={{ background: "var(--card-bg)", borderRadius: 14, overflow: "hidden", marginBottom: 20, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
-              {enabledFields.map((f, i) => (
-                <div key={f.key} style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px",
-                  borderBottom: i < enabledFields.length - 1 ? "1px solid var(--border)" : "none",
-                }}>
-                  <span style={{ fontSize: 14, fontWeight: 500, minWidth: 90 }}>{f.label}</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <input
-                      type="number"
-                      value={goals[f.key] || ""}
-                      onChange={e => updateGoal(f.key, e.target.value)}
-                      placeholder="0"
-                      step="any"
-                      style={{
-                        width: 80, padding: "6px 8px", border: "1.5px solid var(--border)", borderRadius: 8,
-                        fontSize: 14, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
-                        outline: "none", textAlign: "right",
-                      }}
-                      onFocus={e => e.target.style.borderColor = "var(--accent)"}
-                      onBlur={e => e.target.style.borderColor = "var(--border)"}
-                    />
-                    <span style={{ fontSize: 12, color: "var(--text-muted)", minWidth: 28 }}>{f.unit}</span>
+              {enabledFields.map((f, i) => {
+                const b = bounds[f.key] || {};
+                return (
+                  <div key={f.key} style={{
+                    padding: "12px 16px",
+                    borderBottom: i < enabledFields.length - 1 ? "1px solid var(--border)" : "none",
+                  }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+                      {f.label} <span style={{ fontSize: 12, fontWeight: 400, color: "var(--text-muted)" }}>({f.unit})</span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                      {/* Lower Bound */}
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: "#1D4ED8", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 3 }}>Lower</div>
+                        <input
+                          type="number"
+                          value={b.lower !== undefined ? b.lower : ""}
+                          onChange={e => updateBound(f.key, "lower", e.target.value)}
+                          placeholder="—"
+                          step="any"
+                          style={{
+                            width: "100%", padding: "6px 8px", border: "1.5px solid var(--border)", borderRadius: 8,
+                            fontSize: 13, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
+                            outline: "none", textAlign: "center",
+                          }}
+                          onFocus={e => e.target.style.borderColor = "#1D4ED8"}
+                          onBlur={e => e.target.style.borderColor = "var(--border)"}
+                        />
+                      </div>
+                      {/* Goal */}
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 3 }}>Goal</div>
+                        <input
+                          type="number"
+                          value={goals[f.key] || ""}
+                          onChange={e => updateGoal(f.key, e.target.value)}
+                          placeholder="0"
+                          step="any"
+                          style={{
+                            width: "100%", padding: "6px 8px", border: "1.5px solid var(--border)", borderRadius: 8,
+                            fontSize: 13, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
+                            outline: "none", textAlign: "center",
+                          }}
+                          onFocus={e => e.target.style.borderColor = "var(--accent)"}
+                          onBlur={e => e.target.style.borderColor = "var(--border)"}
+                        />
+                      </div>
+                      {/* Upper Bound */}
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: "#B45309", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 3 }}>Upper</div>
+                        <input
+                          type="number"
+                          value={b.upper !== undefined ? b.upper : ""}
+                          onChange={e => updateBound(f.key, "upper", e.target.value)}
+                          placeholder="—"
+                          step="any"
+                          style={{
+                            width: "100%", padding: "6px 8px", border: "1.5px solid var(--border)", borderRadius: 8,
+                            fontSize: 13, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
+                            outline: "none", textAlign: "center",
+                          }}
+                          onFocus={e => e.target.style.borderColor = "#B45309"}
+                          onBlur={e => e.target.style.borderColor = "var(--border)"}
+                        />
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Nutrition Fields */}
@@ -690,7 +875,7 @@ export default function MacroTracker() {
               const backup = {
                 version: 2,
                 exportedAt: new Date().toISOString(),
-                foods, logs, fields, customFields, goals, categories,
+                foods, logs, fields, customFields, goals, categories, weightLog, bounds,
               };
               const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
               const url = URL.createObjectURL(blob);
@@ -724,6 +909,8 @@ export default function MacroTracker() {
                       setCustomFields(data.customFields || []);
                       if (data.goals) setGoals(data.goals);
                       if (data.categories) setCategories(data.categories);
+                      if (data.weightLog) setWeightLog(data.weightLog);
+                      if (data.bounds) setBounds(data.bounds);
                       alert("Backup restored successfully!");
                     }
                   } catch {
@@ -743,7 +930,7 @@ export default function MacroTracker() {
             </div>
             <Btn variant="danger" onClick={() => {
               if (confirm("Clear ALL data? This cannot be undone.")) {
-                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS); setCategories(DEFAULT_CATEGORIES);
+                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS); setCategories(DEFAULT_CATEGORIES); setWeightLog({}); setBounds({});
               }
             }}>
               Reset All Data
@@ -1056,7 +1243,7 @@ function AddCategoryModal({ open, onClose, onAdd, existingCategories }) {
 
 // ─── Stats Panel ─────────────────────────────────────────────────
 
-function StatsPanel({ logs, foods, enabledFields, computeTotals, goals }) {
+function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLog, allFields }) {
   const [range, setRange] = useState("7");
   const sortedDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
 
@@ -1123,6 +1310,66 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals, goals }) {
             })}
           </div>
 
+          {/* TDEE Analysis */}
+          {(() => {
+            const smoothed = computeSmoothedWeights(weightLog);
+            const tdeeData = computeTDEE(smoothed, logs, allFields, foods, 28);
+            if (!tdeeData) return (
+              <div style={{ background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginTop: 16, marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", marginBottom: 8 }}>
+                  Estimated TDEE
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                  Log at least 14 days of weight and 7 days of food to estimate your maintenance calories.
+                </div>
+              </div>
+            );
+            const gaining = tdeeData.weeklyRateLbs > 0.05;
+            const losing = tdeeData.weeklyRateLbs < -0.05;
+            const maintaining = !gaining && !losing;
+            return (
+              <div style={{ background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginTop: 16, marginBottom: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", marginBottom: 12 }}>
+                  Estimated TDEE
+                </div>
+                {/* Big TDEE number */}
+                <div style={{ textAlign: "center", marginBottom: 16 }}>
+                  <div style={{ fontSize: 36, fontWeight: 700, fontFamily: "var(--font-heading)", color: "var(--text)" }}>
+                    {tdeeData.tdee}
+                    <span style={{ fontSize: 14, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)", marginLeft: 4 }}>kcal/day</span>
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
+                    Estimated maintenance calories
+                  </div>
+                </div>
+                {/* Details grid */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Avg Intake</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeData.avgDailyCalories} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>kcal</span></div>
+                  </div>
+                  <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Weekly Rate</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)", color: losing ? "var(--success)" : gaining ? "#EF4444" : "var(--text)" }}>
+                      {tdeeData.weeklyRateLbs > 0 ? "+" : ""}{tdeeData.weeklyRateLbs} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs/wk</span>
+                    </div>
+                  </div>
+                  <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Smoothed Start</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeData.startWeight} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs</span></div>
+                  </div>
+                  <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Smoothed Now</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeData.endWeight} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs</span></div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 10, textAlign: "center" }}>
+                  Based on {tdeeData.daysAnalyzed} days of weight data & {tdeeData.daysWithFoodLog} days of food logs
+                </div>
+              </div>
+            );
+          })()}
+
           <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", margin: "20px 0 10px" }}>
             Daily Breakdown
           </div>
@@ -1141,6 +1388,174 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals, goals }) {
               </div>
             );
           })}
+        </>
+      )}
+    </>
+  );
+}
+
+// ─── Weight Panel ────────────────────────────────────────────────
+
+function WeightPanel({ weightLog, setWeightLog, logs, foods, allFields }) {
+  const [weight, setWeight] = useState("");
+  const [editingDay, setEditingDay] = useState(null);
+  const [editWeight, setEditWeight] = useState("");
+  const today = todayStr();
+  const todayLogged = weightLog[today] !== undefined;
+
+  const smoothed = computeSmoothedWeights(weightLog);
+  const smoothedReversed = [...smoothed].reverse();
+
+  function logWeight() {
+    const val = parseFloat(weight);
+    if (!val || val <= 0) return;
+    setWeightLog({ ...weightLog, [today]: val });
+    setWeight("");
+  }
+
+  function updateWeight(day, val) {
+    const num = parseFloat(val);
+    if (!num || num <= 0) return;
+    setWeightLog({ ...weightLog, [day]: num });
+    setEditingDay(null);
+    setEditWeight("");
+  }
+
+  function deleteWeight(day) {
+    const updated = { ...weightLog };
+    delete updated[day];
+    setWeightLog(updated);
+  }
+
+  // Compute TDEE for display on this panel too
+  const tdeeData = computeTDEE(smoothed, logs, allFields, foods, 28);
+
+  return (
+    <>
+      {/* Log Today's Weight */}
+      <div style={{
+        background: todayLogged ? "var(--card-bg)" : "var(--accent)",
+        borderRadius: 14, padding: "16px", marginBottom: 16,
+        boxShadow: todayLogged ? "0 1px 4px rgba(0,0,0,0.04)" : "0 4px 20px rgba(232,103,46,0.25)",
+      }}>
+        {todayLogged ? (
+          <div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Today's Weight</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "var(--font-heading)" }}>
+                {weightLog[today]} <span style={{ fontSize: 14, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs</span>
+              </div>
+              {smoothed.length > 0 && (
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Smoothed</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{smoothed[smoothed.length - 1].smoothed} lbs</div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 10 }}>Log Today's Weight</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                type="number" value={weight} onChange={e => setWeight(e.target.value)} placeholder="e.g. 175.5" step="0.1"
+                style={{
+                  flex: 1, padding: "10px 12px", border: "2px solid rgba(255,255,255,0.3)", borderRadius: 10,
+                  fontSize: 16, background: "rgba(255,255,255,0.15)", color: "#fff", fontFamily: "var(--font-body)",
+                  outline: "none", fontWeight: 600,
+                }}
+                onKeyDown={e => e.key === "Enter" && logWeight()}
+              />
+              <button onClick={logWeight} disabled={!weight || parseFloat(weight) <= 0} style={{
+                padding: "10px 20px", borderRadius: 10, border: "2px solid rgba(255,255,255,0.3)",
+                background: "rgba(255,255,255,0.2)", color: "#fff", fontSize: 14, fontWeight: 700,
+                cursor: !weight ? "not-allowed" : "pointer", fontFamily: "var(--font-body)", opacity: !weight ? 0.4 : 1,
+              }}>
+                Log
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Quick TDEE Summary */}
+      {tdeeData && (
+        <div style={{
+          background: "var(--card-bg)", borderRadius: 14, padding: "14px 16px", marginBottom: 16,
+          boxShadow: "0 1px 4px rgba(0,0,0,0.04)", display: "flex", justifyContent: "space-around", textAlign: "center",
+        }}>
+          <div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>TDEE</div>
+            <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-heading)", color: "var(--accent)" }}>{tdeeData.tdee}</div>
+            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>kcal/day</div>
+          </div>
+          <div style={{ width: 1, background: "var(--border)" }} />
+          <div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Rate</div>
+            <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-heading)", color: tdeeData.weeklyRateLbs < -0.05 ? "var(--success)" : tdeeData.weeklyRateLbs > 0.05 ? "#EF4444" : "var(--text)" }}>
+              {tdeeData.weeklyRateLbs > 0 ? "+" : ""}{tdeeData.weeklyRateLbs}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>lbs/week</div>
+          </div>
+          <div style={{ width: 1, background: "var(--border)" }} />
+          <div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Trend</div>
+            <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeData.endWeight}</div>
+            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>lbs smoothed</div>
+          </div>
+        </div>
+      )}
+
+      {/* Weight History */}
+      <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 8 }}>
+        History
+      </div>
+      {smoothedReversed.length === 0 ? (
+        <EmptyState icon="⚖️" title="No weight entries" subtitle="Log your weight to start tracking" />
+      ) : (
+        <>
+          {/* Header row */}
+          <div style={{
+            display: "grid", gridTemplateColumns: "1fr 70px 70px 36px", gap: 8, padding: "8px 14px",
+            fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px",
+          }}>
+            <span>Date</span>
+            <span style={{ textAlign: "right" }}>Weight</span>
+            <span style={{ textAlign: "right" }}>Smoothed</span>
+            <span />
+          </div>
+          {smoothedReversed.map(entry => (
+            <div key={entry.date} style={{
+              display: "grid", gridTemplateColumns: "1fr 70px 70px 36px", gap: 8, alignItems: "center",
+              background: "var(--card-bg)", borderRadius: 10, padding: "10px 14px", marginBottom: 4,
+              boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+            }}>
+              <span style={{ fontSize: 13, fontWeight: 500 }}>{formatDate(entry.date)}</span>
+              {editingDay === entry.date ? (
+                <input
+                  type="number" value={editWeight} onChange={e => setEditWeight(e.target.value)} step="0.1" autoFocus
+                  onBlur={() => { if (editWeight) updateWeight(entry.date, editWeight); else setEditingDay(null); }}
+                  onKeyDown={e => { if (e.key === "Enter") updateWeight(entry.date, editWeight); if (e.key === "Escape") setEditingDay(null); }}
+                  style={{
+                    width: "100%", padding: "4px 6px", border: "1.5px solid var(--accent)", borderRadius: 6,
+                    fontSize: 13, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
+                    outline: "none", textAlign: "right", fontWeight: 600,
+                  }}
+                />
+              ) : (
+                <span onClick={() => { setEditingDay(entry.date); setEditWeight(String(entry.raw)); }}
+                  style={{ fontSize: 14, fontWeight: 600, textAlign: "right", cursor: "pointer" }}>
+                  {entry.raw}
+                </span>
+              )}
+              <span style={{ fontSize: 13, fontWeight: 600, textAlign: "right", color: "var(--text-muted)" }}>
+                {entry.smoothed}
+              </span>
+              <button onClick={() => { if (confirm("Delete this entry?")) deleteWeight(entry.date); }} style={{
+                background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 2,
+              }}>×</button>
+            </div>
+          ))}
         </>
       )}
     </>
