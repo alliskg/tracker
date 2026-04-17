@@ -49,6 +49,16 @@ const DEFAULT_CATEGORIES = [
   "Other",
 ];
 
+const DEFAULT_SYMPTOMS = [
+  { key: "dizzy", label: "Dizzy", emoji: "💫" },
+  { key: "sleepy", label: "Sleepy", emoji: "😴" },
+  { key: "energetic", label: "Energetic", emoji: "⚡" },
+  { key: "shaky", label: "Shaky", emoji: "🫨" },
+  { key: "fatigued", label: "Fatigued", emoji: "😩" },
+  { key: "wellRested", label: "Well Rested", emoji: "😌" },
+  { key: "cravingSnack", label: "Craving Snack", emoji: "🍪" },
+];
+
 const STORAGE_KEYS = {
   foods: "mt_foods",
   logs: "mt_logs",
@@ -58,13 +68,15 @@ const STORAGE_KEYS = {
   categories: "mt_categories",
   weightLog: "mt_weight_log",
   bounds: "mt_bounds",
+  symptomLog: "mt_symptom_log",
 };
 
-const TABS = ["today", "weight", "foods", "log", "stats", "settings"];
-const TAB_LABELS = { today: "Today", weight: "Weight", foods: "Foods", log: "Log", stats: "Stats", settings: "Settings" };
+const TABS = ["today", "weight", "symptoms", "foods", "log", "stats", "settings"];
+const TAB_LABELS = { today: "Today", weight: "Weight", symptoms: "Notes", foods: "Foods", log: "Log", stats: "Stats", settings: "Settings" };
 const TAB_ICONS = {
   today: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
   weight: "M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3",
+  symptoms: "M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z",
   foods: "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
   log: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
   stats: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
@@ -224,7 +236,7 @@ function FieldInput({ label, value, onChange, type = "text", placeholder, unit, 
         {label} {unit && <span style={{ fontWeight: 400, textTransform: "none" }}>({unit})</span>}
       </label>
       <input
-        type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} step={step}
+        type={type} inputMode={type === "number" ? "decimal" : undefined} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} step={step}
         style={{
           width: "100%", padding: "10px 12px", border: "1.5px solid var(--border)", borderRadius: 10,
           fontSize: 15, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
@@ -358,6 +370,8 @@ export default function MacroTracker() {
   const [addFoodCategory, setAddFoodCategory] = useState(null);
   const [weightLog, setWeightLog] = useState(() => loadData(STORAGE_KEYS.weightLog, {}));
   const [bounds, setBounds] = useState(() => loadData(STORAGE_KEYS.bounds, {}));
+  const [viewDate, setViewDate] = useState(() => todayStr());
+  const [symptomLog, setSymptomLog] = useState(() => loadData(STORAGE_KEYS.symptomLog, []));
 
   useEffect(() => saveData(STORAGE_KEYS.foods, foods), [foods]);
   useEffect(() => saveData(STORAGE_KEYS.logs, logs), [logs]);
@@ -367,11 +381,13 @@ export default function MacroTracker() {
   useEffect(() => saveData(STORAGE_KEYS.categories, categories), [categories]);
   useEffect(() => saveData(STORAGE_KEYS.weightLog, weightLog), [weightLog]);
   useEffect(() => saveData(STORAGE_KEYS.bounds, bounds), [bounds]);
+  useEffect(() => saveData(STORAGE_KEYS.symptomLog, symptomLog), [symptomLog]);
 
   const allFields = [...fields, ...customFields];
   const enabledFields = allFields.filter(f => f.enabled);
   const today = todayStr();
-  const todayEntries = logs[today] || [];
+  const viewEntries = logs[viewDate] || [];
+  const isToday = viewDate === today;
 
   const computeTotals = useCallback((entries) => {
     const totals = {};
@@ -392,19 +408,19 @@ export default function MacroTracker() {
     return totals;
   }, [allFields, foods]);
 
-  const todayTotals = computeTotals(todayEntries);
+  const viewTotals = computeTotals(viewEntries);
 
   function addLogEntry(foodId, servings) {
     const newLogs = { ...logs };
-    if (!newLogs[today]) newLogs[today] = [];
-    newLogs[today] = [...newLogs[today], { id: generateId(), foodId, servings, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }];
+    if (!newLogs[viewDate]) newLogs[viewDate] = [];
+    newLogs[viewDate] = [...newLogs[viewDate], { id: generateId(), foodId, servings, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }];
     setLogs(newLogs);
   }
 
   function addQuickEntry(fieldKey, amount) {
     const newLogs = { ...logs };
-    if (!newLogs[today]) newLogs[today] = [];
-    newLogs[today] = [...newLogs[today], {
+    if (!newLogs[viewDate]) newLogs[viewDate] = [];
+    newLogs[viewDate] = [...newLogs[viewDate], {
       id: generateId(),
       isQuickAdd: true,
       quickLabel: allFields.find(f => f.key === fieldKey)?.label || fieldKey,
@@ -462,7 +478,13 @@ export default function MacroTracker() {
     setBounds({ ...bounds, [key]: { ...current, [side]: value === "" ? undefined : (parseFloat(value) || 0) } });
   }
 
-  const sortedDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
+  function shiftViewDate(days) {
+    const d = new Date(viewDate + "T12:00:00");
+    d.setDate(d.getDate() + days);
+    setViewDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  }
+
+  const sortedLogDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
 
   // ─── RENDER ──────────────────────────────────────────────────
 
@@ -490,7 +512,26 @@ export default function MacroTracker() {
           {TAB_LABELS[tab]}
         </div>
         {tab === "today" && (
-          <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>{formatDate(today)}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}>
+            <button onClick={() => shiftViewDate(-1)} style={{
+              background: "none", border: "none", cursor: "pointer", padding: "4px 8px", fontSize: 18, color: "var(--text-muted)", lineHeight: 1,
+            }}>‹</button>
+            <button onClick={() => setViewDate(today)} style={{
+              background: "none", border: "none", cursor: "pointer", padding: 0,
+              fontSize: 13, color: isToday ? "var(--text-muted)" : "var(--accent)", fontFamily: "var(--font-body)", fontWeight: isToday ? 400 : 600,
+            }}>
+              {isToday ? formatDate(viewDate) : formatDate(viewDate)}
+            </button>
+            <button onClick={() => shiftViewDate(1)} style={{
+              background: "none", border: "none", cursor: "pointer", padding: "4px 8px", fontSize: 18, color: "var(--text-muted)", lineHeight: 1,
+            }}>›</button>
+            {!isToday && (
+              <button onClick={() => setViewDate(today)} style={{
+                background: "var(--accent)", border: "none", cursor: "pointer", padding: "3px 10px",
+                fontSize: 11, color: "#fff", fontFamily: "var(--font-body)", fontWeight: 600, borderRadius: 12,
+              }}>Today</button>
+            )}
+          </div>
         )}
       </div>
 
@@ -505,7 +546,7 @@ export default function MacroTracker() {
               <ProgressBar
                 key={f.key}
                 field={f}
-                current={todayTotals[f.key] || 0}
+                current={viewTotals[f.key] || 0}
                 goal={goals[f.key] || 0}
                 isCalories={f.key === "calories"}
                 lower={bounds[f.key]?.lower}
@@ -519,14 +560,14 @@ export default function MacroTracker() {
               <Btn variant="secondary" onClick={() => setShowQuickWater(true)}>+ Log Water</Btn>
             </div>
 
-            {/* Today's Entries */}
+            {/* Entries */}
             <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 8 }}>
-              Today's Entries
+              {isToday ? "Today's Entries" : "Entries"}
             </div>
-            {todayEntries.length === 0 ? (
+            {viewEntries.length === 0 ? (
               <EmptyState icon="🍽" title="No entries yet" subtitle="Tap 'Log Food' to get started" />
             ) : (
-              todayEntries.map(entry => {
+              viewEntries.map(entry => {
                 if (entry.isQuickAdd) {
                   const val = Object.entries(entry.values || {})[0];
                   const field = allFields.find(f => f.key === val?.[0]);
@@ -542,7 +583,7 @@ export default function MacroTracker() {
                           +{val?.[1]}{field?.unit || ""} · {entry.time}
                         </div>
                       </div>
-                      <button onClick={() => removeLogEntry(today, entry.id)} style={{
+                      <button onClick={() => removeLogEntry(viewDate, entry.id)} style={{
                         background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, fontSize: 18, lineHeight: 1,
                       }}>×</button>
                     </div>
@@ -564,7 +605,7 @@ export default function MacroTracker() {
                         {enabledFields.slice(0, 3).map(f => `${Math.round((food.nutrition[f.key] || 0) * entry.servings)}${f.unit}`).join(" / ")}
                       </div>
                     </div>
-                    <button onClick={() => removeLogEntry(today, entry.id)} style={{
+                    <button onClick={() => removeLogEntry(viewDate, entry.id)} style={{
                       background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, fontSize: 18, lineHeight: 1,
                     }}>×</button>
                   </div>
@@ -663,10 +704,10 @@ export default function MacroTracker() {
         {/* ═══ LOG TAB ═══ */}
         {tab === "log" && (
           <>
-            {sortedDays.length === 0 ? (
+            {sortedLogDays.length === 0 ? (
               <EmptyState icon="📋" title="No history" subtitle="Start logging food to see your daily summaries" />
             ) : (
-              sortedDays.map(day => {
+              sortedLogDays.map(day => {
                 const entries = logs[day];
                 const totals = computeTotals(entries);
                 const isSelected = selectedDay === day;
@@ -725,6 +766,9 @@ export default function MacroTracker() {
 
         {/* ═══ WEIGHT TAB ═══ */}
         {tab === "weight" && <WeightPanel weightLog={weightLog} setWeightLog={setWeightLog} logs={logs} foods={foods} allFields={allFields} />}
+
+        {/* ═══ SYMPTOMS TAB ═══ */}
+        {tab === "symptoms" && <SymptomsPanel symptomLog={symptomLog} setSymptomLog={setSymptomLog} />}
 
         {/* ═══ STATS TAB ═══ */}
         {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} goals={goals} weightLog={weightLog} allFields={allFields} />}
@@ -875,7 +919,7 @@ export default function MacroTracker() {
               const backup = {
                 version: 2,
                 exportedAt: new Date().toISOString(),
-                foods, logs, fields, customFields, goals, categories, weightLog, bounds,
+                foods, logs, fields, customFields, goals, categories, weightLog, bounds, symptomLog,
               };
               const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
               const url = URL.createObjectURL(blob);
@@ -911,6 +955,7 @@ export default function MacroTracker() {
                       if (data.categories) setCategories(data.categories);
                       if (data.weightLog) setWeightLog(data.weightLog);
                       if (data.bounds) setBounds(data.bounds);
+                      if (data.symptomLog) setSymptomLog(data.symptomLog);
                       alert("Backup restored successfully!");
                     }
                   } catch {
@@ -930,7 +975,7 @@ export default function MacroTracker() {
             </div>
             <Btn variant="danger" onClick={() => {
               if (confirm("Clear ALL data? This cannot be undone.")) {
-                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS); setCategories(DEFAULT_CATEGORIES); setWeightLog({}); setBounds({});
+                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS); setCategories(DEFAULT_CATEGORIES); setWeightLog({}); setBounds({}); setSymptomLog([]);
               }
             }}>
               Reset All Data
@@ -958,7 +1003,7 @@ export default function MacroTracker() {
       </div>
 
       {/* ─── Modals ──────────────────────────────────────────── */}
-      <AddFoodModal open={showAddFood} onClose={() => { setShowAddFood(false); setEditFood(null); setAddFoodCategory(null); }} onSave={saveFood} editFood={editFood} allFields={allFields} enabledFields={enabledFields} categories={categories} defaultCategory={addFoodCategory} />
+      <AddFoodModal open={showAddFood} onClose={() => { setShowAddFood(false); setEditFood(null); setAddFoodCategory(null); }} onSave={saveFood} editFood={editFood} allFields={allFields} enabledFields={enabledFields} categories={categories} defaultCategory={addFoodCategory} foods={foods} />
       <LogEntryModal open={showLogEntry} onClose={() => setShowLogEntry(false)} foods={foods} enabledFields={enabledFields} onAdd={addLogEntry} categories={categories} />
       <AddFieldModal open={showAddField} onClose={() => setShowAddField(false)} onAdd={addCustomField} />
       <QuickWaterModal open={showQuickWater} onClose={() => setShowQuickWater(false)} onAdd={(amt) => { addQuickEntry("water", amt); setShowQuickWater(false); }} waterUnit={fields.find(f => f.key === "water")?.unit || "oz"} />
@@ -1029,12 +1074,16 @@ function QuickWaterModal({ open, onClose, onAdd, waterUnit }) {
 
 // ─── Add/Edit Food Modal ─────────────────────────────────────────
 
-function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledFields, categories, defaultCategory }) {
+function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledFields, categories, defaultCategory, foods }) {
   const [name, setName] = useState("");
   const [servingSize, setServingSize] = useState("");
   const [servingUnit, setServingUnit] = useState("");
   const [nutrition, setNutrition] = useState({});
   const [category, setCategory] = useState("Other");
+  const [mode, setMode] = useState("manual"); // "manual" or "recipe"
+  const [ingredients, setIngredients] = useState([]); // [{ foodId, servings }]
+  const [ingredientSearch, setIngredientSearch] = useState("");
+  const [showIngredientPicker, setShowIngredientPicker] = useState(false);
 
   useEffect(() => {
     if (editFood) {
@@ -1043,27 +1092,75 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
       setServingUnit(editFood.servingUnit);
       setNutrition(editFood.nutrition || {});
       setCategory(editFood.category || "Other");
+      setIngredients(editFood.ingredients || []);
+      setMode(editFood.ingredients && editFood.ingredients.length > 0 ? "recipe" : "manual");
     } else {
       setName(""); setServingSize(""); setServingUnit(""); setNutrition({});
       setCategory(defaultCategory || "Other");
+      setIngredients([]);
+      setMode("manual");
     }
+    setIngredientSearch("");
+    setShowIngredientPicker(false);
   }, [editFood, open, defaultCategory]);
+
+  // Compute combined nutrition from ingredients
+  const recipeTotals = {};
+  enabledFields.forEach(f => { recipeTotals[f.key] = 0; });
+  ingredients.forEach(ing => {
+    const food = foods.find(f => f.id === ing.foodId);
+    if (!food) return;
+    enabledFields.forEach(f => {
+      recipeTotals[f.key] = (recipeTotals[f.key] || 0) + (food.nutrition[f.key] || 0) * (ing.servings || 1);
+    });
+  });
+
+  function addIngredient(foodId) {
+    setIngredients([...ingredients, { foodId, servings: 1 }]);
+    setIngredientSearch("");
+    setShowIngredientPicker(false);
+  }
+
+  function updateIngredientServings(index, val) {
+    const updated = [...ingredients];
+    updated[index] = { ...updated[index], servings: val };
+    setIngredients(updated);
+  }
+
+  function removeIngredient(index) {
+    setIngredients(ingredients.filter((_, i) => i !== index));
+  }
 
   function handleSave() {
     if (!name.trim()) return;
+    const finalNutrition = mode === "recipe" ? { ...recipeTotals } : (() => {
+      const parsed = {};
+      for (const [k, v] of Object.entries(nutrition)) {
+        parsed[k] = typeof v === 'string' ? (parseFloat(v) || 0) : (v || 0);
+      }
+      return parsed;
+    })();
+
     onSave({
       id: editFood ? editFood.id : generateId(),
       name: name.trim(),
       servingSize: parseFloat(servingSize) || 1,
       servingUnit: servingUnit.trim() || "serving",
-      nutrition,
+      nutrition: finalNutrition,
       category,
+      ...(mode === "recipe" ? { ingredients } : {}),
     });
   }
 
+  const filteredFoods = foods.filter(f =>
+    f.name.toLowerCase().includes(ingredientSearch.toLowerCase()) &&
+    !ingredients.some(ing => ing.foodId === f.id)
+  );
+
   return (
     <Modal open={open} onClose={onClose} title={editFood ? "Edit Food" : "Add Food"}>
-      <FieldInput label="Food Name" value={name} onChange={setName} placeholder="e.g. Olive Oil" />
+      <FieldInput label="Food Name" value={name} onChange={setName} placeholder="e.g. Omelette" />
+
       {/* Category Picker */}
       <div style={{ marginBottom: 12 }}>
         <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: "var(--text-muted)", fontFamily: "var(--font-body)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
@@ -1083,20 +1180,145 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
           ))}
         </div>
       </div>
+
+      {/* Mode Toggle */}
+      <div style={{ display: "flex", gap: 0, marginBottom: 16, borderRadius: 10, overflow: "hidden", border: "1.5px solid var(--border)" }}>
+        <button onClick={() => setMode("manual")} style={{
+          flex: 1, padding: "8px 0", fontSize: 13, fontWeight: 600, cursor: "pointer", border: "none",
+          background: mode === "manual" ? "var(--accent)" : "var(--input-bg)",
+          color: mode === "manual" ? "#fff" : "var(--text-muted)", fontFamily: "var(--font-body)",
+        }}>Manual Entry</button>
+        <button onClick={() => setMode("recipe")} style={{
+          flex: 1, padding: "8px 0", fontSize: 13, fontWeight: 600, cursor: "pointer", border: "none",
+          borderLeft: "1.5px solid var(--border)",
+          background: mode === "recipe" ? "var(--accent)" : "var(--input-bg)",
+          color: mode === "recipe" ? "#fff" : "var(--text-muted)", fontFamily: "var(--font-body)",
+        }}>Build from Recipe</button>
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <FieldInput label="Serving Size" value={servingSize} onChange={setServingSize} type="number" placeholder="1" step="any" />
-        <FieldInput label="Serving Unit" value={servingUnit} onChange={setServingUnit} placeholder="tbsp" />
+        <FieldInput label="Serving Unit" value={servingUnit} onChange={setServingUnit} placeholder="serving" />
       </div>
-      <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", margin: "8px 0 8px" }}>
-        Nutrition per Serving
-      </div>
-      {enabledFields.map(f => (
-        <FieldInput key={f.key} label={f.label} unit={f.unit} type="number" step="any" placeholder="0"
-          value={nutrition[f.key] !== undefined ? String(nutrition[f.key]) : ""}
-          onChange={v => setNutrition({ ...nutrition, [f.key]: parseFloat(v) || 0 })}
-        />
-      ))}
-      <Btn onClick={handleSave} disabled={!name.trim()} style={{ marginTop: 8 }}>
+
+      {mode === "manual" ? (
+        <>
+          <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", margin: "8px 0 8px" }}>
+            Nutrition per Serving
+          </div>
+          {enabledFields.map(f => (
+            <FieldInput key={f.key} label={f.label} unit={f.unit} type="number" step="any" placeholder="0"
+              value={nutrition[f.key] !== undefined ? nutrition[f.key] : ""}
+              onChange={v => setNutrition({ ...nutrition, [f.key]: v })}
+            />
+          ))}
+        </>
+      ) : (
+        <>
+          {/* Recipe Builder */}
+          <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", margin: "8px 0 8px" }}>
+            Ingredients
+          </div>
+
+          {/* Ingredient list */}
+          {ingredients.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              {ingredients.map((ing, i) => {
+                const food = foods.find(f => f.id === ing.foodId);
+                if (!food) return null;
+                return (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", marginBottom: 4,
+                    background: "var(--input-bg)", borderRadius: 10,
+                  }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{food.name}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{food.servingSize} {food.servingUnit} per serving</div>
+                    </div>
+                    <input
+                      type="number" inputMode="decimal"
+                      value={ing.servings}
+                      onChange={e => updateIngredientServings(i, e.target.value)}
+                      step="any"
+                      style={{
+                        width: 52, padding: "5px 6px", border: "1.5px solid var(--border)", borderRadius: 8,
+                        fontSize: 13, background: "#fff", color: "var(--text)", fontFamily: "var(--font-body)",
+                        outline: "none", textAlign: "center", fontWeight: 600,
+                      }}
+                      onFocus={e => e.target.style.borderColor = "var(--accent)"}
+                      onBlur={e => e.target.style.borderColor = "var(--border)"}
+                    />
+                    <button onClick={() => removeIngredient(i)} style={{
+                      background: "none", border: "none", color: "#cc3333", cursor: "pointer", fontSize: 16, padding: 4, lineHeight: 1,
+                    }}>×</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Add ingredient */}
+          {showIngredientPicker ? (
+            <div style={{ marginBottom: 12 }}>
+              <input
+                type="text" value={ingredientSearch} onChange={e => setIngredientSearch(e.target.value)}
+                placeholder="Search foods..." autoFocus
+                style={{
+                  width: "100%", padding: "10px 12px", border: "1.5px solid var(--accent)", borderRadius: 10,
+                  fontSize: 14, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
+                  outline: "none", boxSizing: "border-box", marginBottom: 4,
+                }}
+              />
+              <div style={{ maxHeight: 160, overflowY: "auto" }}>
+                {filteredFoods.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: 12, color: "var(--text-muted)", fontSize: 12 }}>
+                    {foods.length === 0 ? "No foods in your library" : "No matches"}
+                  </div>
+                ) : (
+                  filteredFoods.map(food => (
+                    <div key={food.id} onClick={() => addIngredient(food.id)} style={{
+                      padding: "8px 12px", borderRadius: 8, cursor: "pointer", marginBottom: 2,
+                      background: "var(--card-bg)", fontSize: 13, fontWeight: 500,
+                    }}>
+                      {food.name} <span style={{ color: "var(--text-muted)", fontSize: 11 }}>({food.servingSize} {food.servingUnit})</span>
+                    </div>
+                  ))
+                )}
+              </div>
+              <button onClick={() => { setShowIngredientPicker(false); setIngredientSearch(""); }} style={{
+                background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 12, padding: "4px 0", fontFamily: "var(--font-body)",
+              }}>Cancel</button>
+            </div>
+          ) : (
+            <Btn variant="secondary" onClick={() => setShowIngredientPicker(true)} style={{ marginBottom: 12 }}>
+              + Add Ingredient
+            </Btn>
+          )}
+
+          {/* Computed totals */}
+          {ingredients.length > 0 && (
+            <div style={{
+              background: "var(--input-bg)", borderRadius: 10, padding: "10px 14px", marginBottom: 8,
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.3px", color: "var(--text-muted)", marginBottom: 6 }}>
+                Combined Nutrition
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px" }}>
+                {enabledFields.map(f => (
+                  recipeTotals[f.key] ? (
+                    <span key={f.key} style={{ fontSize: 12 }}>
+                      <span style={{ color: "var(--text-muted)" }}>{f.label}:</span>{" "}
+                      <span style={{ fontWeight: 600 }}>{Math.round(recipeTotals[f.key] * 10) / 10}{f.unit}</span>
+                    </span>
+                  ) : null
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      <Btn onClick={handleSave} disabled={!name.trim() || (mode === "recipe" && ingredients.length === 0)} style={{ marginTop: 8 }}>
         {editFood ? "Save Changes" : "Add Food"}
       </Btn>
     </Modal>
@@ -1557,6 +1779,170 @@ function WeightPanel({ weightLog, setWeightLog, logs, foods, allFields }) {
             </div>
           ))}
         </>
+      )}
+    </>
+  );
+}
+
+// ─── Symptoms Panel ──────────────────────────────────────────────
+
+function SymptomsPanel({ symptomLog, setSymptomLog }) {
+  const [showForm, setShowForm] = useState(false);
+  const [note, setNote] = useState("");
+  const [ratings, setRatings] = useState({});
+  const [filterDay, setFilterDay] = useState(null);
+
+  function submitEntry() {
+    const entry = {
+      id: generateId(),
+      date: todayStr(),
+      timestamp: new Date().toISOString(),
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      note: note.trim(),
+      symptoms: { ...ratings },
+    };
+    setSymptomLog([entry, ...symptomLog]);
+    setNote("");
+    setRatings({});
+    setShowForm(false);
+  }
+
+  function deleteEntry(id) {
+    setSymptomLog(symptomLog.filter(e => e.id !== id));
+  }
+
+  const days = {};
+  symptomLog.forEach(entry => {
+    const d = entry.date || "unknown";
+    if (!days[d]) days[d] = [];
+    days[d].push(entry);
+  });
+  const sortedDays = Object.keys(days).sort((a, b) => b.localeCompare(a));
+  const displayDays = filterDay ? sortedDays.filter(d => d === filterDay) : sortedDays;
+
+  return (
+    <>
+      <Btn onClick={() => setShowForm(!showForm)} style={{ marginBottom: 16 }}>
+        {showForm ? "Cancel" : "+ Log Symptoms"}
+      </Btn>
+
+      {showForm && (
+        <div style={{
+          background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginBottom: 16,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
+            How are you feeling?
+          </div>
+          {DEFAULT_SYMPTOMS.map(s => (
+            <div key={s.key} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{s.emoji} {s.label}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "var(--font-heading)", color: ratings[s.key] ? "var(--accent)" : "var(--text-muted)", minWidth: 20, textAlign: "right" }}>
+                  {ratings[s.key] || "—"}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                {[1,2,3,4,5,6,7,8,9,10].map(n => (
+                  <button key={n} onClick={() => setRatings({ ...ratings, [s.key]: ratings[s.key] === n ? undefined : n })} style={{
+                    flex: 1, padding: "6px 0", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                    border: "none", fontFamily: "var(--font-body)", transition: "all 0.15s",
+                    background: ratings[s.key] === n ? "var(--accent)" : "var(--input-bg)",
+                    color: ratings[s.key] === n ? "#fff" : "var(--text-muted)",
+                  }}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 6, marginTop: 4 }}>
+            Notes
+          </div>
+          <textarea
+            value={note} onChange={e => setNote(e.target.value)}
+            placeholder="How are you feeling? Any observations..."
+            rows={3}
+            style={{
+              width: "100%", padding: "10px 12px", border: "1.5px solid var(--border)", borderRadius: 10,
+              fontSize: 14, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
+              outline: "none", resize: "vertical", boxSizing: "border-box",
+            }}
+            onFocus={e => e.target.style.borderColor = "var(--accent)"}
+            onBlur={e => e.target.style.borderColor = "var(--border)"}
+          />
+
+          <Btn onClick={submitEntry} disabled={Object.keys(ratings).filter(k => ratings[k]).length === 0 && !note.trim()} style={{ marginTop: 12 }}>
+            Save Entry
+          </Btn>
+        </div>
+      )}
+
+      {sortedDays.length > 1 && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, overflowX: "auto", paddingBottom: 4 }}>
+          <button onClick={() => setFilterDay(null)} style={{
+            padding: "5px 12px", borderRadius: 16, fontSize: 12, fontWeight: 600, cursor: "pointer",
+            border: "none", whiteSpace: "nowrap", fontFamily: "var(--font-body)",
+            background: !filterDay ? "var(--accent)" : "var(--card-bg)", color: !filterDay ? "#fff" : "var(--text-muted)",
+          }}>All</button>
+          {sortedDays.slice(0, 10).map(d => (
+            <button key={d} onClick={() => setFilterDay(filterDay === d ? null : d)} style={{
+              padding: "5px 12px", borderRadius: 16, fontSize: 12, fontWeight: 600, cursor: "pointer",
+              border: "none", whiteSpace: "nowrap", fontFamily: "var(--font-body)",
+              background: filterDay === d ? "var(--accent)" : "var(--card-bg)", color: filterDay === d ? "#fff" : "var(--text-muted)",
+            }}>{formatDate(d)}</button>
+          ))}
+        </div>
+      )}
+
+      {symptomLog.length === 0 ? (
+        <EmptyState icon="📝" title="No entries yet" subtitle="Log how you're feeling to start tracking patterns" />
+      ) : (
+        displayDays.map(day => (
+          <div key={day}>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", padding: "8px 0 4px" }}>
+              {formatDate(day)}
+            </div>
+            {days[day].map(entry => (
+              <div key={entry.id} style={{
+                background: "var(--card-bg)", borderRadius: 12, padding: "14px 16px", marginBottom: 8,
+                boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>{entry.time}</div>
+                  <button onClick={() => { if (confirm("Delete this entry?")) deleteEntry(entry.id); }} style={{
+                    background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 2,
+                  }}>×</button>
+                </div>
+                {Object.keys(entry.symptoms || {}).filter(k => entry.symptoms[k]).length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: entry.note ? 8 : 0 }}>
+                    {DEFAULT_SYMPTOMS.map(s => {
+                      const val = entry.symptoms?.[s.key];
+                      if (!val) return null;
+                      const intensity = val <= 3 ? "#3B82F6" : val <= 6 ? "#F59E0B" : "#EF4444";
+                      return (
+                        <span key={s.key} style={{
+                          display: "inline-flex", alignItems: "center", gap: 4,
+                          padding: "3px 10px", borderRadius: 12, fontSize: 12, fontWeight: 600,
+                          background: "var(--input-bg)", color: "var(--text)",
+                        }}>
+                          {s.emoji} {s.label}
+                          <span style={{ color: intensity, fontFamily: "var(--font-heading)", fontSize: 13 }}>{val}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+                {entry.note && (
+                  <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+                    {entry.note}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ))
       )}
     </>
   );
