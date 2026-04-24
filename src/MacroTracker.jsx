@@ -59,6 +59,18 @@ const DEFAULT_SYMPTOMS = [
   { key: "cravingSnack", label: "Craving Snack", emoji: "🍪" },
 ];
 
+const DEFAULT_CALORIE_PLAN = {
+  weeklyRate: 0,        // lbs/week, negative = lose
+  protein: 150,         // g/day fixed
+  fat: 65,              // g/day fixed
+  cyclingEnabled: false,
+  dayTypes: [
+    { name: "Training", calOffset: 200, proteinMult: 1.0, fatMult: 0.8 },
+    { name: "Rest", calOffset: -100, proteinMult: 1.0, fatMult: 1.1 },
+  ],
+  weekSchedule: { MO: "Rest", TU: "Rest", WE: "Rest", TH: "Rest", FR: "Rest", SA: "Rest", SU: "Rest" },
+};
+
 const STORAGE_KEYS = {
   foods: "mt_foods",
   logs: "mt_logs",
@@ -69,6 +81,7 @@ const STORAGE_KEYS = {
   weightLog: "mt_weight_log",
   bounds: "mt_bounds",
   symptomLog: "mt_symptom_log",
+  caloriePlan: "mt_calorie_plan",
 };
 
 const TABS = ["today", "weight", "symptoms", "foods", "log", "stats", "settings"];
@@ -188,6 +201,179 @@ function computeTDEE(smoothedWeights, logs, allFields, foods, numDays = 28) {
     daysWithFoodLog: daysWithFood,
     startWeight: startEntry.smoothed,
     endWeight: endEntry.smoothed,
+  };
+}
+
+function computeTDEEProgress(weightLog, logs) {
+  const weightDays = Object.keys(weightLog).length;
+  const foodDays = Object.values(logs).filter(entries => entries && entries.length > 0).length;
+  const weightNeeded = Math.max(0, 14 - weightDays);
+  const foodNeeded = Math.max(0, 7 - foodDays);
+  const ready = weightNeeded === 0 && foodNeeded === 0;
+  return { weightDays, foodDays, weightNeeded, foodNeeded, ready };
+}
+
+function computePlanTargets(caloriePlan, tdee, dateStr) {
+  if (!tdee || tdee <= 0) return null;
+
+  const dailyDeficit = (caloriePlan.weeklyRate || 0) * 500;
+  const baseTarget = Math.round(tdee + dailyDeficit);
+  const protein = caloriePlan.protein || 150;
+  const fat = caloriePlan.fat || 65;
+
+  if (!caloriePlan.cyclingEnabled) {
+    const proteinCals = protein * 4;
+    const fatCals = fat * 9;
+    const carbCals = Math.max(0, baseTarget - proteinCals - fatCals);
+    const carbs = Math.round(carbCals / 4);
+    return { calories: baseTarget, protein, fat, carbs };
+  }
+
+  // Cycling mode: get raw plan target for this day type
+  const dayNames = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+  const d = new Date(dateStr + "T12:00:00");
+  const dow = dayNames[d.getDay()];
+  const typeName = caloriePlan.weekSchedule?.[dow] || "Rest";
+  const dayType = (caloriePlan.dayTypes || []).find(t => t.name === typeName) || { calOffset: 0, proteinMult: 1, fatMult: 1 };
+
+  const schedule = caloriePlan.weekSchedule || {};
+  const types = caloriePlan.dayTypes || [];
+  let totalOffset = 0;
+  for (const key of dayNames) {
+    const tn = schedule[key] || "Rest";
+    const dt = types.find(t => t.name === tn) || { calOffset: 0 };
+    totalOffset += (dt.calOffset || 0);
+  }
+  const avgOffset = totalOffset / 7;
+  const adjustedTarget = Math.round(baseTarget + (dayType.calOffset || 0) - avgOffset);
+
+  const adjProtein = Math.round(protein * (dayType.proteinMult || 1));
+  const adjFat = Math.round(fat * (dayType.fatMult || 1));
+  const proteinCals = adjProtein * 4;
+  const fatCals = adjFat * 9;
+  const carbCals = Math.max(0, adjustedTarget - proteinCals - fatCals);
+  const carbs = Math.round(carbCals / 4);
+
+  return { calories: adjustedTarget, protein: adjProtein, fat: adjFat, carbs, dayType: typeName };
+}
+
+// Get the Monday of the week containing dateStr
+function getWeekMonday(dateStr) {
+  const d = new Date(dateStr + "T12:00:00");
+  const day = d.getDay(); // 0=Sun
+  const diff = day === 0 ? -6 : 1 - day; // Monday = 1
+  d.setDate(d.getDate() + diff);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function getWeekDays(mondayStr) {
+  const days = [];
+  const d = new Date(mondayStr + "T12:00:00");
+  for (let i = 0; i < 7; i++) {
+    days.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    d.setDate(d.getDate() + 1);
+  }
+  return days; // [Mon, Tue, Wed, Thu, Fri, Sat, Sun]
+}
+
+function computeWeeklyPlan(caloriePlan, tdee, viewDate, logs, foods, allFields) {
+  if (!tdee || tdee <= 0) return null;
+
+  const monday = getWeekMonday(viewDate);
+  const weekDays = getWeekDays(monday);
+  const today = todayStr();
+
+  // Compute raw plan targets for each day
+  const rawTargets = weekDays.map(day => computePlanTargets(caloriePlan, tdee, day));
+  if (rawTargets.some(t => !t)) return null;
+
+  const weeklyCalTarget = rawTargets.reduce((s, t) => s + t.calories, 0);
+
+  // Compute actuals for each day
+  const actuals = weekDays.map(day => {
+    const entries = logs[day] || [];
+    let cals = 0;
+    entries.forEach(entry => {
+      if (entry.isQuickAdd) {
+        cals += entry.values?.calories || 0;
+      } else {
+        const food = foods.find(f => f.id === entry.foodId);
+        if (food) cals += (food.nutrition?.calories || 0) * entry.servings;
+      }
+    });
+    return cals;
+  });
+
+  // Determine which days are "past" (before viewDate) and which are "remaining" (viewDate onward)
+  const viewIdx = weekDays.indexOf(viewDate);
+  const pastDays = viewIdx >= 0 ? weekDays.slice(0, viewIdx) : [];
+  const remainingDays = viewIdx >= 0 ? weekDays.slice(viewIdx) : weekDays;
+
+  const pastActualCals = pastDays.reduce((s, day) => {
+    const idx = weekDays.indexOf(day);
+    return s + actuals[idx];
+  }, 0);
+
+  const remainingBudget = weeklyCalTarget - pastActualCals;
+
+  // Get the raw planned cals for remaining days
+  const remainingRawTargets = remainingDays.map(day => {
+    const idx = weekDays.indexOf(day);
+    return rawTargets[idx];
+  });
+  const remainingRawSum = remainingRawTargets.reduce((s, t) => s + t.calories, 0);
+
+  // Proportional scale factor
+  const scaleFactor = remainingRawSum > 0 ? remainingBudget / remainingRawSum : 1;
+
+  // Compute adjusted targets for each remaining day
+  const protein = caloriePlan.protein || 150;
+  const fat = caloriePlan.fat || 65;
+  const adjustedTargets = {};
+
+  remainingDays.forEach(day => {
+    const idx = weekDays.indexOf(day);
+    const raw = rawTargets[idx];
+    const adjCals = Math.round(raw.calories * scaleFactor);
+
+    // Scale protein and fat multipliers proportionally too
+    const pMult = raw.protein / protein; // recover the day-type multiplier
+    const fMult = raw.fat / fat;
+    const adjProtein = Math.round(protein * pMult * scaleFactor);
+    const adjFat = Math.round(fat * fMult * scaleFactor);
+
+    // But floor protein at 80% of base to prevent going too low
+    const finalProtein = Math.max(Math.round(protein * pMult * 0.8), adjProtein > 0 ? adjProtein : 0);
+    // Recalculate fat from remaining after protein
+    const finalFat = Math.round(fat * fMult * scaleFactor);
+    const proteinCals = finalProtein * 4;
+    const fatCals = finalFat * 9;
+    const carbCals = Math.max(0, adjCals - proteinCals - fatCals);
+    const carbs = Math.round(carbCals / 4);
+
+    adjustedTargets[day] = {
+      calories: adjCals,
+      protein: finalProtein,
+      fat: finalFat,
+      carbs,
+      dayType: raw.dayType,
+      isAdjusted: Math.abs(scaleFactor - 1) > 0.01,
+      rawCalories: raw.calories,
+    };
+  });
+
+  return {
+    weekDays,
+    monday,
+    rawTargets,
+    actuals,
+    weeklyCalTarget,
+    pastActualCals,
+    remainingBudget,
+    remainingDays: remainingDays.length,
+    scaleFactor,
+    adjustedTargets,
+    viewDayTargets: adjustedTargets[viewDate] || null,
   };
 }
 
@@ -372,6 +558,7 @@ export default function MacroTracker() {
   const [bounds, setBounds] = useState(() => loadData(STORAGE_KEYS.bounds, {}));
   const [viewDate, setViewDate] = useState(() => todayStr());
   const [symptomLog, setSymptomLog] = useState(() => loadData(STORAGE_KEYS.symptomLog, []));
+  const [caloriePlan, setCaloriePlan] = useState(() => loadData(STORAGE_KEYS.caloriePlan, DEFAULT_CALORIE_PLAN));
 
   useEffect(() => saveData(STORAGE_KEYS.foods, foods), [foods]);
   useEffect(() => saveData(STORAGE_KEYS.logs, logs), [logs]);
@@ -382,6 +569,7 @@ export default function MacroTracker() {
   useEffect(() => saveData(STORAGE_KEYS.weightLog, weightLog), [weightLog]);
   useEffect(() => saveData(STORAGE_KEYS.bounds, bounds), [bounds]);
   useEffect(() => saveData(STORAGE_KEYS.symptomLog, symptomLog), [symptomLog]);
+  useEffect(() => saveData(STORAGE_KEYS.caloriePlan, caloriePlan), [caloriePlan]);
 
   const allFields = [...fields, ...customFields];
   const enabledFields = allFields.filter(f => f.enabled);
@@ -410,11 +598,39 @@ export default function MacroTracker() {
 
   const viewTotals = computeTotals(viewEntries);
 
+  // Compute calorie plan targets for the viewed date
+  const smoothedForPlan = computeSmoothedWeights(weightLog);
+  const tdeeForPlan = computeTDEE(smoothedForPlan, logs, allFields, foods, 28);
+  const planTargets = tdeeForPlan ? computePlanTargets(caloriePlan, tdeeForPlan.tdee, viewDate) : null;
+  const weeklyPlan = tdeeForPlan ? computeWeeklyPlan(caloriePlan, tdeeForPlan.tdee, viewDate, logs, foods, allFields) : null;
+
+  // Merge plan targets into goals for the Today tab
+  // Use the weekly-adjusted targets if available, otherwise raw plan targets
+  const effectiveGoals = { ...goals };
+  const activeDayTargets = weeklyPlan?.viewDayTargets || planTargets;
+  if (activeDayTargets) {
+    effectiveGoals.calories = activeDayTargets.calories;
+    effectiveGoals.protein = activeDayTargets.protein;
+    effectiveGoals.fat = activeDayTargets.fat;
+    effectiveGoals.carbs = activeDayTargets.carbs;
+  }
+
   function addLogEntry(foodId, servings) {
     const newLogs = { ...logs };
     if (!newLogs[viewDate]) newLogs[viewDate] = [];
     newLogs[viewDate] = [...newLogs[viewDate], { id: generateId(), foodId, servings, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }];
     setLogs(newLogs);
+
+    // Decrement remaining servings for queued foods
+    const food = foods.find(f => f.id === foodId);
+    if (food && food.queued) {
+      const remaining = (food.remainingServings || 0) - (parseFloat(servings) || 0);
+      setFoods(foods.map(f => f.id === foodId ? {
+        ...f,
+        remainingServings: Math.max(0, remaining),
+        depleted: remaining <= 0,
+      } : f));
+    }
   }
 
   function addQuickEntry(fieldKey, amount) {
@@ -448,7 +664,17 @@ export default function MacroTracker() {
   }
 
   function deleteFood(id) {
-    setFoods(foods.filter(f => f.id !== id));
+    // Check if this food is referenced in any logs
+    const isReferenced = Object.values(logs).some(dayEntries =>
+      dayEntries.some(e => e.foodId === id)
+    );
+    if (isReferenced) {
+      // Soft-delete: mark as depleted so logs still resolve
+      setFoods(foods.map(f => f.id === id ? { ...f, depleted: true, hidden: true } : f));
+    } else {
+      // Hard-delete: no logs reference it
+      setFoods(foods.filter(f => f.id !== id));
+    }
   }
 
   function toggleField(key, isCustom) {
@@ -542,12 +768,49 @@ export default function MacroTracker() {
         {tab === "today" && (
           <>
             {/* Progress Bars */}
+            {activeDayTargets && activeDayTargets.dayType && (
+              <div style={{
+                fontSize: 12, fontWeight: 600, color: "var(--accent)", marginBottom: 4,
+                display: "flex", alignItems: "center", gap: 6,
+              }}>
+                <span style={{ padding: "2px 8px", borderRadius: 8, background: "var(--accent-light)", fontSize: 11 }}>
+                  {activeDayTargets.dayType} Day
+                </span>
+                <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
+                  {activeDayTargets.calories} kcal target
+                </span>
+              </div>
+            )}
+            {/* Weekly Budget Summary */}
+            {weeklyPlan && (
+              <div style={{
+                background: "var(--card-bg)", borderRadius: 12, padding: "10px 14px", marginBottom: 10,
+                boxShadow: "0 1px 4px rgba(0,0,0,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center",
+              }}>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  <span style={{ fontWeight: 600, color: "var(--text)" }}>Week budget:</span>{" "}
+                  {Math.round(weeklyPlan.pastActualCals)} / {weeklyPlan.weeklyCalTarget} kcal
+                </div>
+                <div style={{ fontSize: 12, textAlign: "right" }}>
+                  <span style={{ fontWeight: 700, color: weeklyPlan.remainingBudget >= 0 ? "var(--success)" : "#EF4444" }}>
+                    {Math.round(weeklyPlan.remainingBudget)}
+                  </span>
+                  <span style={{ color: "var(--text-muted)" }}> left · {weeklyPlan.remainingDays}d</span>
+                </div>
+              </div>
+            )}
+            {/* Adjustment notice */}
+            {weeklyPlan?.viewDayTargets?.isAdjusted && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 8, fontStyle: "italic" }}>
+                Targets adjusted from {weeklyPlan.viewDayTargets.rawCalories} → {weeklyPlan.viewDayTargets.calories} kcal to keep weekly average on track
+              </div>
+            )}
             {enabledFields.map(f => (
               <ProgressBar
                 key={f.key}
                 field={f}
                 current={viewTotals[f.key] || 0}
-                goal={goals[f.key] || 0}
+                goal={effectiveGoals[f.key] || 0}
                 isCalories={f.key === "calories"}
                 lower={bounds[f.key]?.lower}
                 upper={bounds[f.key]?.upper}
@@ -621,11 +884,11 @@ export default function MacroTracker() {
             <Btn onClick={() => { setEditFood(null); setAddFoodCategory(null); setShowAddFood(true); }} style={{ marginBottom: 16 }}>
               + Add Food Item
             </Btn>
-            {foods.length === 0 ? (
+            {foods.filter(f => !f.depleted && !f.hidden).length === 0 ? (
               <EmptyState icon="📦" title="No foods yet" subtitle="Add your first food item to get started" />
             ) : (
               categories.map(cat => {
-                const catFoods = foods.filter(f => (f.category || "Other") === cat);
+                const catFoods = foods.filter(f => (f.category || "Other") === cat && !f.depleted && !f.hidden);
                 if (catFoods.length === 0) return null;
                 return (
                   <div key={cat} style={{ marginBottom: 20 }}>
@@ -644,13 +907,27 @@ export default function MacroTracker() {
                     {catFoods.map(food => (
                       <div key={food.id} style={{
                         background: "var(--card-bg)", borderRadius: 12, padding: "14px 16px", marginBottom: 6,
-                        boxShadow: "0 1px 4px rgba(0,0,0,0.04)", borderLeft: "3px solid var(--accent)",
+                        boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                        borderLeft: food.queued ? "3px solid #F59E0B" : "3px solid var(--accent)",
                       }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                           <div style={{ flex: 1 }}>
-                            <div style={{ fontSize: 15, fontWeight: 600 }}>{food.name}</div>
+                            <div style={{ fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                              {food.name}
+                              {food.queued && (
+                                <span style={{
+                                  fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 8,
+                                  background: "#FEF3C7", color: "#92400E",
+                                }}>QUEUED</span>
+                              )}
+                            </div>
                             <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
                               Serving: {food.servingSize} {food.servingUnit}
+                              {food.queued && (
+                                <span style={{ marginLeft: 8, color: "#92400E", fontWeight: 600 }}>
+                                  {Math.round((food.remainingServings || 0) * 100) / 100} remaining
+                                </span>
+                              )}
                             </div>
                             <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, display: "flex", flexWrap: "wrap", gap: "6px 12px" }}>
                               {enabledFields.map(f => (
@@ -671,7 +948,7 @@ export default function MacroTracker() {
             )}
             {/* Show uncategorized if any foods have categories not in the list */}
             {(() => {
-              const uncategorized = foods.filter(f => f.category && !categories.includes(f.category));
+              const uncategorized = foods.filter(f => f.category && !categories.includes(f.category) && !f.depleted && !f.hidden);
               if (uncategorized.length === 0) return null;
               return (
                 <div style={{ marginBottom: 20 }}>
@@ -771,11 +1048,108 @@ export default function MacroTracker() {
         {tab === "symptoms" && <SymptomsPanel symptomLog={symptomLog} setSymptomLog={setSymptomLog} />}
 
         {/* ═══ STATS TAB ═══ */}
-        {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} goals={goals} weightLog={weightLog} allFields={allFields} />}
+        {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} goals={goals} weightLog={weightLog} allFields={allFields} caloriePlan={caloriePlan} weeklyPlan={weeklyPlan} tdeeForPlan={tdeeForPlan} />}
 
         {/* ═══ SETTINGS TAB ═══ */}
         {tab === "settings" && (
           <>
+            {/* Calorie Plan */}
+            <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
+              Calorie Plan
+            </div>
+            <div style={{ background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginBottom: 20, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+              {!tdeeForPlan && (() => {
+                const prog = computeTDEEProgress(weightLog, logs);
+                return (
+                  <div style={{ marginBottom: 12, padding: "10px 12px", background: "var(--input-bg)", borderRadius: 8 }}>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>
+                      TDEE not yet available — configure your plan now and targets will activate automatically.
+                    </div>
+                    <div style={{ display: "flex", gap: 12, fontSize: 12 }}>
+                      <span style={{ color: prog.weightNeeded === 0 ? "var(--success)" : "var(--text)" }}>
+                        Weight: <span style={{ fontWeight: 700 }}>{prog.weightDays}/14</span>
+                        {prog.weightNeeded > 0 && <span style={{ color: "var(--accent)" }}> ({prog.weightNeeded} more)</span>}
+                      </span>
+                      <span style={{ color: prog.foodNeeded === 0 ? "var(--success)" : "var(--text)" }}>
+                        Food: <span style={{ fontWeight: 700 }}>{prog.foodDays}/7</span>
+                        {prog.foodNeeded > 0 && <span style={{ color: "var(--accent)" }}> ({prog.foodNeeded} more)</span>}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+              {tdeeForPlan && (
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+                  Estimated TDEE: <span style={{ fontWeight: 700, color: "var(--text)" }}>{tdeeForPlan.tdee} kcal/day</span>
+                </div>
+              )}
+              <FieldInput label="Weekly Rate (lbs/week)" value={caloriePlan.weeklyRate !== undefined ? String(caloriePlan.weeklyRate) : ""} onChange={v => setCaloriePlan({ ...caloriePlan, weeklyRate: v === "" ? 0 : parseFloat(v) || 0 })} type="number" step="0.1" placeholder="e.g. -1.0" />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <FieldInput label="Protein (g/day)" value={caloriePlan.protein !== undefined ? String(caloriePlan.protein) : ""} onChange={v => setCaloriePlan({ ...caloriePlan, protein: parseFloat(v) || 0 })} type="number" step="1" placeholder="150" />
+                <FieldInput label="Fat (g/day)" value={caloriePlan.fat !== undefined ? String(caloriePlan.fat) : ""} onChange={v => setCaloriePlan({ ...caloriePlan, fat: parseFloat(v) || 0 })} type="number" step="1" placeholder="65" />
+              </div>
+              {tdeeForPlan && (() => {
+                const targets = computePlanTargets(caloriePlan, tdeeForPlan.tdee, todayStr());
+                if (!targets) return null;
+                return (
+                  <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 14px", marginTop: 4, marginBottom: 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.3px", color: "var(--text-muted)", marginBottom: 6 }}>
+                      {caloriePlan.cyclingEnabled ? "Base" : "Daily"} Targets
+                    </div>
+                    <div style={{ display: "flex", gap: 16, fontSize: 13 }}>
+                      <span><span style={{ fontWeight: 700 }}>{targets.calories}</span> kcal</span>
+                      <span><span style={{ fontWeight: 700 }}>{targets.protein}</span>g P</span>
+                      <span><span style={{ fontWeight: 700 }}>{targets.fat}</span>g F</span>
+                      <span><span style={{ fontWeight: 700 }}>{targets.carbs}</span>g C</span>
+                    </div>
+                  </div>
+                );
+              })()}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderTop: "1px solid var(--border)", marginTop: 8 }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>Calorie Cycling</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Different targets per day type</div>
+                </div>
+                <Toggle checked={caloriePlan.cyclingEnabled || false} onChange={() => setCaloriePlan({ ...caloriePlan, cyclingEnabled: !caloriePlan.cyclingEnabled })} />
+              </div>
+              {caloriePlan.cyclingEnabled && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.3px", color: "var(--text-muted)", marginTop: 8, marginBottom: 6 }}>Day Types</div>
+                  {(caloriePlan.dayTypes || []).map((dt, i) => (
+                    <div key={i} style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <input value={dt.name} onChange={e => { const u = [...caloriePlan.dayTypes]; u[i] = { ...u[i], name: e.target.value }; setCaloriePlan({ ...caloriePlan, dayTypes: u }); }} style={{ border: "none", background: "transparent", fontSize: 14, fontWeight: 600, fontFamily: "var(--font-body)", color: "var(--text)", outline: "none", width: 120 }} />
+                        <button onClick={() => setCaloriePlan({ ...caloriePlan, dayTypes: caloriePlan.dayTypes.filter((_, j) => j !== i) })} style={{ background: "none", border: "none", color: "#cc3333", cursor: "pointer", fontSize: 14 }}>×</button>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                        {[["Cal Offset", "calOffset", "0"], ["P mult", "proteinMult", "1"], ["F mult", "fatMult", "1"]].map(([lbl, key, def]) => (
+                          <div key={key}>
+                            <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>{lbl}</div>
+                            <input type="number" inputMode="decimal" step={key === "calOffset" ? "50" : "0.1"} value={dt[key] !== undefined ? dt[key] : ""} onChange={e => { const u = [...caloriePlan.dayTypes]; u[i] = { ...u[i], [key]: parseFloat(e.target.value) || (key === "calOffset" ? 0 : 1) }; setCaloriePlan({ ...caloriePlan, dayTypes: u }); }} style={{ width: "100%", padding: "4px 6px", border: "1.5px solid var(--border)", borderRadius: 6, fontSize: 12, background: "#fff", color: "var(--text)", fontFamily: "var(--font-body)", outline: "none", textAlign: "center" }} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  <button onClick={() => setCaloriePlan({ ...caloriePlan, dayTypes: [...(caloriePlan.dayTypes || []), { name: "New", calOffset: 0, proteinMult: 1, fatMult: 1 }] })} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, fontWeight: 600, padding: "4px 0", fontFamily: "var(--font-body)", marginBottom: 12 }}>+ Add Day Type</button>
+                  <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.3px", color: "var(--text-muted)", marginBottom: 6 }}>Weekly Schedule</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 8 }}>
+                    {["MO","TU","WE","TH","FR","SA","SU"].map(dow => {
+                      const currentType = caloriePlan.weekSchedule?.[dow] || (caloriePlan.dayTypes?.[0]?.name || "Rest");
+                      return (
+                        <div key={dow} style={{ textAlign: "center" }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", marginBottom: 4 }}>{dow}</div>
+                          <select value={currentType} onChange={e => setCaloriePlan({ ...caloriePlan, weekSchedule: { ...(caloriePlan.weekSchedule || {}), [dow]: e.target.value } })} style={{ width: "100%", padding: "4px 2px", border: "1.5px solid var(--border)", borderRadius: 6, fontSize: 9, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)", outline: "none" }}>
+                            {(caloriePlan.dayTypes || []).map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+
             {/* Categories */}
             <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
               Food Categories
@@ -919,7 +1293,7 @@ export default function MacroTracker() {
               const backup = {
                 version: 2,
                 exportedAt: new Date().toISOString(),
-                foods, logs, fields, customFields, goals, categories, weightLog, bounds, symptomLog,
+                foods, logs, fields, customFields, goals, categories, weightLog, bounds, symptomLog, caloriePlan,
               };
               const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
               const url = URL.createObjectURL(blob);
@@ -956,6 +1330,7 @@ export default function MacroTracker() {
                       if (data.weightLog) setWeightLog(data.weightLog);
                       if (data.bounds) setBounds(data.bounds);
                       if (data.symptomLog) setSymptomLog(data.symptomLog);
+                      if (data.caloriePlan) setCaloriePlan(data.caloriePlan);
                       alert("Backup restored successfully!");
                     }
                   } catch {
@@ -975,7 +1350,7 @@ export default function MacroTracker() {
             </div>
             <Btn variant="danger" onClick={() => {
               if (confirm("Clear ALL data? This cannot be undone.")) {
-                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS); setCategories(DEFAULT_CATEGORIES); setWeightLog({}); setBounds({}); setSymptomLog([]);
+                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS); setCategories(DEFAULT_CATEGORIES); setWeightLog({}); setBounds({}); setSymptomLog([]); setCaloriePlan(DEFAULT_CALORIE_PLAN);
               }
             }}>
               Reset All Data
@@ -1084,6 +1459,8 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
   const [ingredients, setIngredients] = useState([]); // [{ foodId, servings }]
   const [ingredientSearch, setIngredientSearch] = useState("");
   const [showIngredientPicker, setShowIngredientPicker] = useState(false);
+  const [isQueued, setIsQueued] = useState(false);
+  const [totalServings, setTotalServings] = useState("");
 
   useEffect(() => {
     if (editFood) {
@@ -1094,11 +1471,15 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
       setCategory(editFood.category || "Other");
       setIngredients(editFood.ingredients || []);
       setMode(editFood.ingredients && editFood.ingredients.length > 0 ? "recipe" : "manual");
+      setIsQueued(editFood.queued || false);
+      setTotalServings(editFood.queued ? String(editFood.remainingServings || "") : "");
     } else {
       setName(""); setServingSize(""); setServingUnit(""); setNutrition({});
       setCategory(defaultCategory || "Other");
       setIngredients([]);
       setMode("manual");
+      setIsQueued(false);
+      setTotalServings("");
     }
     setIngredientSearch("");
     setShowIngredientPicker(false);
@@ -1149,6 +1530,7 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
       nutrition: finalNutrition,
       category,
       ...(mode === "recipe" ? { ingredients } : {}),
+      ...(isQueued ? { queued: true, remainingServings: parseFloat(totalServings) || 1, depleted: false } : {}),
     });
   }
 
@@ -1318,7 +1700,22 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
         </>
       )}
 
-      <Btn onClick={handleSave} disabled={!name.trim() || (mode === "recipe" && ingredients.length === 0)} style={{ marginTop: 8 }}>
+      {/* Queued Toggle */}
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        padding: "12px 0", borderTop: "1px solid var(--border)", marginTop: 8,
+      }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>Queued Item</div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Limited quantity — removed when used up</div>
+        </div>
+        <Toggle checked={isQueued} onChange={() => setIsQueued(!isQueued)} />
+      </div>
+      {isQueued && (
+        <FieldInput label="Total Servings Available" value={totalServings} onChange={setTotalServings} type="number" placeholder="e.g. 4" step="any" />
+      )}
+
+      <Btn onClick={handleSave} disabled={!name.trim() || (mode === "recipe" && ingredients.length === 0) || (isQueued && (!totalServings || parseFloat(totalServings) <= 0))} style={{ marginTop: 8 }}>
         {editFood ? "Save Changes" : "Add Food"}
       </Btn>
     </Modal>
@@ -1334,21 +1731,34 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories 
 
   useEffect(() => { if (open) { setSearch(""); setSelectedFood(null); setServings("1"); } }, [open]);
 
-  const filtered = foods.filter(f => f.name.toLowerCase().includes(search.toLowerCase()));
+  // Filter out depleted/hidden foods
+  const availableFoods = foods.filter(f => !f.depleted && !f.hidden);
+  const filtered = availableFoods.filter(f => f.name.toLowerCase().includes(search.toLowerCase()));
   const isSearching = search.trim().length > 0;
 
   function handleAdd() {
     if (!selectedFood) return;
-    onAdd(selectedFood.id, parseFloat(servings) || 1);
+    const s = parseFloat(servings) || 1;
+    onAdd(selectedFood.id, s);
     onClose();
   }
 
+  const maxServings = selectedFood?.queued ? (selectedFood.remainingServings || 0) : null;
+  const servingsExceedsMax = maxServings !== null && (parseFloat(servings) || 0) > maxServings;
+
   const FoodRow = ({ food }) => (
-    <div onClick={() => setSelectedFood(food)} style={{
+    <div onClick={() => { setSelectedFood(food); setServings("1"); }} style={{
       padding: "12px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 4,
       background: "var(--input-bg)", transition: "background 0.15s",
     }}>
-      <div style={{ fontSize: 14, fontWeight: 600 }}>{food.name}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+        {food.name}
+        {food.queued && (
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 6, background: "#FEF3C7", color: "#92400E" }}>
+            {Math.round((food.remainingServings || 0) * 100) / 100} left
+          </span>
+        )}
+      </div>
       <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
         {food.servingSize} {food.servingUnit}
         {enabledFields.length > 0 && " · "}
@@ -1365,7 +1775,7 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories 
           <div style={{ maxHeight: 320, overflowY: "auto" }}>
             {filtered.length === 0 ? (
               <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)", fontSize: 13 }}>
-                {foods.length === 0 ? "Add foods in the Foods tab first" : "No matches found"}
+                {availableFoods.length === 0 ? "Add foods in the Foods tab first" : "No matches found"}
               </div>
             ) : isSearching ? (
               filtered.map(food => <FoodRow key={food.id} food={food} />)
@@ -1388,7 +1798,14 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories 
       ) : (
         <>
           <div style={{ background: "var(--input-bg)", borderRadius: 12, padding: "14px 16px", marginBottom: 12 }}>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>{selectedFood.name}</div>
+            <div style={{ fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+              {selectedFood.name}
+              {selectedFood.queued && (
+                <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: "#FEF3C7", color: "#92400E" }}>
+                  {Math.round((selectedFood.remainingServings || 0) * 100) / 100} servings left
+                </span>
+              )}
+            </div>
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
               Per {selectedFood.servingSize} {selectedFood.servingUnit}
             </div>
@@ -1401,8 +1818,13 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories 
               ))}
             </div>
           </div>
-          <FieldInput label="Number of Servings" value={servings} onChange={setServings} type="number" placeholder="1" step="any" />
-          {parseFloat(servings) > 0 && (
+          <FieldInput label={maxServings !== null ? `Servings (max ${Math.round(maxServings * 100) / 100})` : "Number of Servings"} value={servings} onChange={setServings} type="number" placeholder="1" step="any" />
+          {servingsExceedsMax && (
+            <div style={{ fontSize: 12, color: "#EF4444", marginTop: -8, marginBottom: 8 }}>
+              Only {Math.round(maxServings * 100) / 100} servings remaining
+            </div>
+          )}
+          {parseFloat(servings) > 0 && !servingsExceedsMax && (
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, display: "flex", flexWrap: "wrap", gap: "2px 12px" }}>
               <span style={{ fontWeight: 600, color: "var(--text)" }}>Total:</span>
               {enabledFields.map(f => (
@@ -1412,7 +1834,7 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories 
           )}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Btn variant="secondary" onClick={() => setSelectedFood(null)}>Back</Btn>
-            <Btn onClick={handleAdd}>Add</Btn>
+            <Btn onClick={handleAdd} disabled={!servings || parseFloat(servings) <= 0 || servingsExceedsMax}>Add</Btn>
           </div>
         </>
       )}
@@ -1465,7 +1887,7 @@ function AddCategoryModal({ open, onClose, onAdd, existingCategories }) {
 
 // ─── Stats Panel ─────────────────────────────────────────────────
 
-function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLog, allFields }) {
+function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLog, allFields, caloriePlan, weeklyPlan, tdeeForPlan }) {
   const [range, setRange] = useState("7");
   const sortedDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
 
@@ -1541,9 +1963,34 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLo
                 <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", marginBottom: 8 }}>
                   Estimated TDEE
                 </div>
-                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                  Log at least 14 days of weight and 7 days of food to estimate your maintenance calories.
-                </div>
+                {(() => {
+                  const prog = computeTDEEProgress(weightLog, logs);
+                  return (
+                    <div>
+                      <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>
+                        Log weight and food daily to unlock your TDEE estimate.
+                      </div>
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <div style={{ flex: 1, background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                          <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 4 }}>Weight Logs</div>
+                          <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-heading)", color: prog.weightNeeded === 0 ? "var(--success)" : "var(--text)" }}>
+                            {prog.weightDays}<span style={{ fontSize: 12, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>/14</span>
+                          </div>
+                          {prog.weightNeeded > 0 && <div style={{ fontSize: 11, color: "var(--accent)", marginTop: 2 }}>{prog.weightNeeded} more needed</div>}
+                          {prog.weightNeeded === 0 && <div style={{ fontSize: 11, color: "var(--success)", marginTop: 2 }}>Ready</div>}
+                        </div>
+                        <div style={{ flex: 1, background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                          <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 4 }}>Food Logs</div>
+                          <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-heading)", color: prog.foodNeeded === 0 ? "var(--success)" : "var(--text)" }}>
+                            {prog.foodDays}<span style={{ fontSize: 12, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>/7</span>
+                          </div>
+                          {prog.foodNeeded > 0 && <div style={{ fontSize: 11, color: "var(--accent)", marginTop: 2 }}>{prog.foodNeeded} more needed</div>}
+                          {prog.foodNeeded === 0 && <div style={{ fontSize: 11, color: "var(--success)", marginTop: 2 }}>Ready</div>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             );
             const gaining = tdeeData.weeklyRateLbs > 0.05;
@@ -1588,6 +2035,99 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLo
                 <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 10, textAlign: "center" }}>
                   Based on {tdeeData.daysAnalyzed} days of weight data & {tdeeData.daysWithFoodLog} days of food logs
                 </div>
+              </div>
+            );
+          })()}
+
+          {/* Calorie Plan & Weekly View */}
+          {(() => {
+            if (!tdeeForPlan || !weeklyPlan) return null;
+            const baseTargets = computePlanTargets(caloriePlan, tdeeForPlan.tdee, todayStr());
+            if (!baseTargets) return null;
+            const today = todayStr();
+            const dayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+            return (
+              <div style={{ background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginTop: 16, marginBottom: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", marginBottom: 12 }}>
+                  Calorie Plan
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>
+                  Rate: <span style={{ fontWeight: 600, color: "var(--text)" }}>{caloriePlan.weeklyRate > 0 ? "+" : ""}{caloriePlan.weeklyRate} lbs/week</span>
+                  {" → "}
+                  <span style={{ fontWeight: 600, color: "var(--text)" }}>{Math.round(Math.abs(caloriePlan.weeklyRate) * 500)} kcal/day {caloriePlan.weeklyRate < 0 ? "deficit" : caloriePlan.weeklyRate > 0 ? "surplus" : ""}</span>
+                </div>
+
+                {/* Weekly summary bar */}
+                <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }}>
+                    <span style={{ color: "var(--text-muted)" }}>Weekly Total</span>
+                    <span>
+                      <span style={{ fontWeight: 700 }}>{Math.round(weeklyPlan.pastActualCals)}</span>
+                      <span style={{ color: "var(--text-muted)" }}> / {weeklyPlan.weeklyCalTarget} kcal</span>
+                    </span>
+                  </div>
+                  <div style={{ height: 6, borderRadius: 3, background: "var(--border)", overflow: "hidden" }}>
+                    <div style={{
+                      height: "100%", borderRadius: 3, transition: "width 0.4s",
+                      width: `${Math.min((weeklyPlan.pastActualCals / weeklyPlan.weeklyCalTarget) * 100, 100)}%`,
+                      background: weeklyPlan.pastActualCals > weeklyPlan.weeklyCalTarget ? "#EF4444" : "var(--accent)",
+                    }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, textAlign: "right" }}>
+                    <span style={{ fontWeight: 600, color: weeklyPlan.remainingBudget >= 0 ? "var(--success)" : "#EF4444" }}>
+                      {Math.round(weeklyPlan.remainingBudget)}
+                    </span> remaining · {weeklyPlan.remainingDays} days left
+                  </div>
+                </div>
+
+                {/* Per-day breakdown */}
+                <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.3px", color: "var(--text-muted)", marginBottom: 6 }}>
+                  This Week
+                </div>
+                {weeklyPlan.weekDays.map((day, i) => {
+                  const raw = weeklyPlan.rawTargets[i];
+                  const actual = weeklyPlan.actuals[i];
+                  const adjusted = weeklyPlan.adjustedTargets[day];
+                  const isPast = day < today;
+                  const isToday = day === today;
+                  const target = adjusted ? adjusted.calories : raw.calories;
+                  const pct = target > 0 ? Math.min((actual / target) * 100, 100) : 0;
+                  return (
+                    <div key={day} style={{
+                      display: "grid", gridTemplateColumns: "42px 1fr 55px", gap: 8, alignItems: "center",
+                      padding: "6px 0", opacity: isPast ? 0.7 : 1,
+                    }}>
+                      <div style={{ fontSize: 12, fontWeight: isToday ? 700 : 500, color: isToday ? "var(--accent)" : "var(--text)" }}>
+                        {dayLabels[i]}
+                        {raw.dayType && <div style={{ fontSize: 9, color: "var(--text-muted)", fontWeight: 400 }}>{raw.dayType}</div>}
+                      </div>
+                      <div style={{ position: "relative", height: 6, borderRadius: 3, background: "var(--border)" }}>
+                        <div style={{
+                          height: "100%", borderRadius: 3,
+                          width: `${pct}%`,
+                          background: isPast ? (actual > target * 1.05 ? "#EF4444" : "var(--success)") : isToday ? "var(--accent)" : "var(--border)",
+                          transition: "width 0.3s",
+                        }} />
+                      </div>
+                      <div style={{ fontSize: 11, textAlign: "right" }}>
+                        {isPast || isToday ? (
+                          <span>
+                            <span style={{ fontWeight: 600 }}>{Math.round(actual)}</span>
+                            <span style={{ color: "var(--text-muted)" }}>/{target}</span>
+                          </span>
+                        ) : (
+                          <span style={{ color: "var(--text-muted)" }}>
+                            {adjusted && adjusted.isAdjusted ? (
+                              <span style={{ fontWeight: 600 }}>{target}</span>
+                            ) : (
+                              target
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             );
           })()}
