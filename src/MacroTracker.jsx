@@ -82,14 +82,16 @@ const STORAGE_KEYS = {
   bounds: "mt_bounds",
   symptomLog: "mt_symptom_log",
   caloriePlan: "mt_calorie_plan",
+  bowelLog: "mt_bowel_log",
 };
 
-const TABS = ["today", "weight", "symptoms", "foods", "log", "stats", "settings"];
-const TAB_LABELS = { today: "Today", weight: "Weight", symptoms: "Notes", foods: "Foods", log: "Log", stats: "Stats", settings: "Settings" };
+const TABS = ["today", "weight", "symptoms", "bowel", "foods", "log", "stats", "settings"];
+const TAB_LABELS = { today: "Today", weight: "Weight", symptoms: "Notes", bowel: "Bowel", foods: "Foods", log: "Log", stats: "Stats", settings: "Settings" };
 const TAB_ICONS = {
   today: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
   weight: "M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3",
   symptoms: "M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z",
+  bowel: "M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z",
   foods: "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
   log: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
   stats: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
@@ -559,6 +561,7 @@ export default function MacroTracker() {
   const [viewDate, setViewDate] = useState(() => todayStr());
   const [symptomLog, setSymptomLog] = useState(() => loadData(STORAGE_KEYS.symptomLog, []));
   const [caloriePlan, setCaloriePlan] = useState(() => loadData(STORAGE_KEYS.caloriePlan, DEFAULT_CALORIE_PLAN));
+  const [bowelLog, setBowelLog] = useState(() => loadData(STORAGE_KEYS.bowelLog, []));
 
   useEffect(() => saveData(STORAGE_KEYS.foods, foods), [foods]);
   useEffect(() => saveData(STORAGE_KEYS.logs, logs), [logs]);
@@ -570,6 +573,7 @@ export default function MacroTracker() {
   useEffect(() => saveData(STORAGE_KEYS.bounds, bounds), [bounds]);
   useEffect(() => saveData(STORAGE_KEYS.symptomLog, symptomLog), [symptomLog]);
   useEffect(() => saveData(STORAGE_KEYS.caloriePlan, caloriePlan), [caloriePlan]);
+  useEffect(() => saveData(STORAGE_KEYS.bowelLog, bowelLog), [bowelLog]);
 
   const allFields = [...fields, ...customFields];
   const enabledFields = allFields.filter(f => f.enabled);
@@ -1047,6 +1051,9 @@ export default function MacroTracker() {
         {/* ═══ SYMPTOMS TAB ═══ */}
         {tab === "symptoms" && <SymptomsPanel symptomLog={symptomLog} setSymptomLog={setSymptomLog} />}
 
+        {/* ═══ BOWEL TAB ═══ */}
+        {tab === "bowel" && <BowelPanel bowelLog={bowelLog} setBowelLog={setBowelLog} />}
+
         {/* ═══ STATS TAB ═══ */}
         {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} goals={goals} weightLog={weightLog} allFields={allFields} caloriePlan={caloriePlan} weeklyPlan={weeklyPlan} tdeeForPlan={tdeeForPlan} />}
 
@@ -1293,7 +1300,7 @@ export default function MacroTracker() {
               const backup = {
                 version: 2,
                 exportedAt: new Date().toISOString(),
-                foods, logs, fields, customFields, goals, categories, weightLog, bounds, symptomLog, caloriePlan,
+                foods, logs, fields, customFields, goals, categories, weightLog, bounds, symptomLog, caloriePlan, bowelLog,
               };
               const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
               const url = URL.createObjectURL(blob);
@@ -1331,6 +1338,7 @@ export default function MacroTracker() {
                       if (data.bounds) setBounds(data.bounds);
                       if (data.symptomLog) setSymptomLog(data.symptomLog);
                       if (data.caloriePlan) setCaloriePlan(data.caloriePlan);
+                      if (data.bowelLog) setBowelLog(data.bowelLog);
                       alert("Backup restored successfully!");
                     }
                   } catch {
@@ -1350,7 +1358,7 @@ export default function MacroTracker() {
             </div>
             <Btn variant="danger" onClick={() => {
               if (confirm("Clear ALL data? This cannot be undone.")) {
-                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS); setCategories(DEFAULT_CATEGORIES); setWeightLog({}); setBounds({}); setSymptomLog([]); setCaloriePlan(DEFAULT_CALORIE_PLAN);
+                setFoods([]); setLogs({}); setFields(DEFAULT_FIELDS); setCustomFields([]); setGoals(DEFAULT_GOALS); setCategories(DEFAULT_CATEGORIES); setWeightLog({}); setBounds({}); setSymptomLog([]); setCaloriePlan(DEFAULT_CALORIE_PLAN); setBowelLog([]);
               }
             }}>
               Reset All Data
@@ -2481,6 +2489,197 @@ function SymptomsPanel({ symptomLog, setSymptomLog }) {
                 )}
               </div>
             ))}
+          </div>
+        ))
+      )}
+    </>
+  );
+}
+
+// ─── Bowel Panel ─────────────────────────────────────────────────
+
+const BRISTOL_SCALE = [
+  { score: 1, label: "Hard lumps", desc: "Separate hard lumps, like nuts", color: "#8B4513", icon: "●●●" },
+  { score: 2, label: "Lumpy sausage", desc: "Sausage-shaped but lumpy", color: "#A0522D", icon: "▓▓" },
+  { score: 3, label: "Cracked sausage", desc: "Like a sausage with cracks", color: "#CD853F", icon: "▒▒" },
+  { score: 4, label: "Smooth snake", desc: "Smooth and soft, like a snake", color: "#22C55E", icon: "═══" },
+  { score: 5, label: "Soft blobs", desc: "Soft blobs with clear edges", color: "#86EFAC", icon: "○○" },
+  { score: 6, label: "Mushy", desc: "Fluffy pieces with ragged edges", color: "#F59E0B", icon: "～～" },
+  { score: 7, label: "Liquid", desc: "Watery, no solid pieces", color: "#EF4444", icon: "≋≋" },
+];
+
+function BowelPanel({ bowelLog, setBowelLog }) {
+  const [showForm, setShowForm] = useState(false);
+  const [selectedScore, setSelectedScore] = useState(null);
+  const [note, setNote] = useState("");
+
+  function submitEntry() {
+    if (!selectedScore) return;
+    const entry = {
+      id: generateId(),
+      date: todayStr(),
+      timestamp: new Date().toISOString(),
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      bristol: selectedScore,
+      note: note.trim(),
+    };
+    setBowelLog([entry, ...bowelLog]);
+    setSelectedScore(null);
+    setNote("");
+    setShowForm(false);
+  }
+
+  function deleteEntry(id) {
+    setBowelLog(bowelLog.filter(e => e.id !== id));
+  }
+
+  const days = {};
+  bowelLog.forEach(entry => {
+    const d = entry.date || "unknown";
+    if (!days[d]) days[d] = [];
+    days[d].push(entry);
+  });
+  const sortedDays = Object.keys(days).sort((a, b) => b.localeCompare(a));
+
+  const last7 = bowelLog.filter(e => {
+    const diff = (new Date() - new Date(e.timestamp)) / (1000 * 60 * 60 * 24);
+    return diff <= 7;
+  });
+  const avgBristol = last7.length > 0 ? (last7.reduce((s, e) => s + e.bristol, 0) / last7.length) : null;
+  const freqPerDay = last7.length > 0 ? (last7.length / 7) : null;
+  const daysSinceLast = bowelLog.length > 0
+    ? Math.round((new Date() - new Date(bowelLog[0].timestamp)) / (1000 * 60 * 60 * 24) * 10) / 10
+    : null;
+
+  return (
+    <>
+      {bowelLog.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+          <div style={{ background: "var(--card-bg)", borderRadius: 12, padding: "10px 12px", textAlign: "center", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 2 }}>Last</div>
+            <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)", color: daysSinceLast > 2 ? "#EF4444" : daysSinceLast > 1 ? "#F59E0B" : "var(--success)" }}>
+              {daysSinceLast < 0.1 ? "Today" : daysSinceLast < 1 ? `${Math.round(daysSinceLast * 24)}h` : `${Math.round(daysSinceLast)}d`}
+            </div>
+            <div style={{ fontSize: 9, color: "var(--text-muted)" }}>ago</div>
+          </div>
+          <div style={{ background: "var(--card-bg)", borderRadius: 12, padding: "10px 12px", textAlign: "center", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 2 }}>7d Avg</div>
+            <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)", color: avgBristol && (avgBristol >= 3 && avgBristol <= 4) ? "var(--success)" : "var(--text)" }}>
+              {avgBristol ? avgBristol.toFixed(1) : "—"}
+            </div>
+            <div style={{ fontSize: 9, color: "var(--text-muted)" }}>bristol</div>
+          </div>
+          <div style={{ background: "var(--card-bg)", borderRadius: 12, padding: "10px 12px", textAlign: "center", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 2 }}>7d Freq</div>
+            <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)", color: freqPerDay && freqPerDay >= 0.7 ? "var(--success)" : "#F59E0B" }}>
+              {freqPerDay ? freqPerDay.toFixed(1) : "—"}
+            </div>
+            <div style={{ fontSize: 9, color: "var(--text-muted)" }}>/day</div>
+          </div>
+        </div>
+      )}
+
+      <Btn onClick={() => setShowForm(!showForm)} style={{ marginBottom: 16 }}>
+        {showForm ? "Cancel" : "+ Log Bowel Movement"}
+      </Btn>
+
+      {showForm && (
+        <div style={{
+          background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginBottom: 16,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 10 }}>
+            Bristol Stool Scale
+          </div>
+          {BRISTOL_SCALE.map(b => (
+            <div key={b.score} onClick={() => setSelectedScore(selectedScore === b.score ? null : b.score)} style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: 4,
+              borderRadius: 10, cursor: "pointer", transition: "all 0.15s",
+              background: selectedScore === b.score ? "var(--accent)" : "var(--input-bg)",
+              color: selectedScore === b.score ? "#fff" : "var(--text)",
+            }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 14, fontWeight: 800, fontFamily: "var(--font-heading)",
+                background: selectedScore === b.score ? "rgba(255,255,255,0.2)" : b.color,
+                color: "#fff",
+              }}>
+                {b.score}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{b.label}</div>
+                <div style={{ fontSize: 11, opacity: 0.7 }}>{b.desc}</div>
+              </div>
+              <div style={{ fontSize: 14, letterSpacing: 1, opacity: 0.5 }}>{b.icon}</div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "var(--text-muted)", textAlign: "center", margin: "8px 0", fontStyle: "italic" }}>
+            Types 3-4 are considered ideal
+          </div>
+
+          <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 6, marginTop: 8 }}>
+            Notes (optional)
+          </div>
+          <textarea
+            value={note} onChange={e => setNote(e.target.value)}
+            placeholder="Any observations..."
+            rows={2}
+            style={{
+              width: "100%", padding: "10px 12px", border: "1.5px solid var(--border)", borderRadius: 10,
+              fontSize: 14, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
+              outline: "none", resize: "vertical", boxSizing: "border-box",
+            }}
+            onFocus={e => e.target.style.borderColor = "var(--accent)"}
+            onBlur={e => e.target.style.borderColor = "var(--border)"}
+          />
+
+          <Btn onClick={submitEntry} disabled={!selectedScore} style={{ marginTop: 12 }}>
+            Save Entry
+          </Btn>
+        </div>
+      )}
+
+      <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 8 }}>
+        History
+      </div>
+      {bowelLog.length === 0 ? (
+        <EmptyState icon="📋" title="No entries yet" subtitle="Log your first bowel movement to start tracking" />
+      ) : (
+        sortedDays.map(day => (
+          <div key={day}>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", padding: "8px 0 4px" }}>
+              {formatDate(day)} · {days[day].length}×
+            </div>
+            {days[day].map(entry => {
+              const bristol = BRISTOL_SCALE.find(b => b.score === entry.bristol);
+              return (
+                <div key={entry.id} style={{
+                  background: "var(--card-bg)", borderRadius: 12, padding: "12px 14px", marginBottom: 6,
+                  boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                  display: "flex", alignItems: "center", gap: 10,
+                }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 15, fontWeight: 800, fontFamily: "var(--font-heading)",
+                    background: bristol?.color || "var(--border)", color: "#fff", flexShrink: 0,
+                  }}>
+                    {entry.bristol}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>
+                      {bristol?.label || `Type ${entry.bristol}`}
+                      <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 400, marginLeft: 6 }}>{entry.time}</span>
+                    </div>
+                    {entry.note && (
+                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, whiteSpace: "pre-wrap" }}>{entry.note}</div>
+                    )}
+                  </div>
+                  <button onClick={() => { if (confirm("Delete this entry?")) deleteEntry(entry.id); }} style={{
+                    background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 2, flexShrink: 0,
+                  }}>×</button>
+                </div>
+              );
+            })}
           </div>
         ))
       )}
