@@ -238,13 +238,35 @@ function computePlanTargets(caloriePlan, tdee, dateStr) {
   const typeName = caloriePlan.weekSchedule?.[dow] || "Rest";
   const dayType = (caloriePlan.dayTypes || []).find(t => t.name === typeName) || { calOffset: 0, proteinMult: 1, fatMult: 1 };
 
+  // Manual mode: return absolute targets directly
+  if (dayType.mode === "manual") {
+    const manualCals = dayType.manualCalories || baseTarget;
+    const manualProtein = dayType.manualProtein || protein;
+    const manualFat = dayType.manualFat || fat;
+    const manualCarbs = dayType.manualCarbs !== undefined ? dayType.manualCarbs : Math.round(Math.max(0, manualCals - manualProtein * 4 - manualFat * 9) / 4);
+    return {
+      calories: manualCals,
+      protein: manualProtein,
+      fat: manualFat,
+      carbs: manualCarbs,
+      dayType: typeName,
+      isManual: true,
+      manualOverrides: dayType.manualOverrides || {},
+    };
+  }
+
+  // Relative mode: use offsets and multipliers
   const schedule = caloriePlan.weekSchedule || {};
   const types = caloriePlan.dayTypes || [];
   let totalOffset = 0;
   for (const key of dayNames) {
     const tn = schedule[key] || "Rest";
     const dt = types.find(t => t.name === tn) || { calOffset: 0 };
-    totalOffset += (dt.calOffset || 0);
+    if (dt.mode === "manual") {
+      totalOffset += ((dt.manualCalories || baseTarget) - baseTarget);
+    } else {
+      totalOffset += (dt.calOffset || 0);
+    }
   }
   const avgOffset = totalOffset / 7;
   const adjustedTarget = Math.round(baseTarget + (dayType.calOffset || 0) - avgOffset);
@@ -319,14 +341,17 @@ function computeWeeklyPlan(caloriePlan, tdee, viewDate, logs, foods, allFields) 
   const remainingBudget = weeklyCalTarget - pastActualCals;
 
   // Get the raw planned cals for remaining days
+  // Manual day types are fixed — subtract them from budget and only scale relative types
   const remainingRawTargets = remainingDays.map(day => {
     const idx = weekDays.indexOf(day);
     return rawTargets[idx];
   });
-  const remainingRawSum = remainingRawTargets.reduce((s, t) => s + t.calories, 0);
+  const manualFixedCals = remainingRawTargets.filter(t => t.isManual).reduce((s, t) => s + t.calories, 0);
+  const relativeRawSum = remainingRawTargets.filter(t => !t.isManual).reduce((s, t) => s + t.calories, 0);
+  const budgetForRelative = remainingBudget - manualFixedCals;
 
-  // Proportional scale factor
-  const scaleFactor = remainingRawSum > 0 ? remainingBudget / remainingRawSum : 1;
+  // Proportional scale factor — only applies to relative day types
+  const scaleFactor = relativeRawSum > 0 ? budgetForRelative / relativeRawSum : 1;
 
   // Compute adjusted targets for each remaining day
   const protein = caloriePlan.protein || 150;
@@ -336,6 +361,23 @@ function computeWeeklyPlan(caloriePlan, tdee, viewDate, logs, foods, allFields) 
   remainingDays.forEach(day => {
     const idx = weekDays.indexOf(day);
     const raw = rawTargets[idx];
+
+    // Manual day types don't get scaled — they keep their absolute values
+    if (raw.isManual) {
+      adjustedTargets[day] = {
+        calories: raw.calories,
+        protein: raw.protein,
+        fat: raw.fat,
+        carbs: raw.carbs,
+        dayType: raw.dayType,
+        isAdjusted: false,
+        rawCalories: raw.calories,
+        manualOverrides: raw.manualOverrides,
+        isManual: true,
+      };
+      return;
+    }
+
     const adjCals = Math.round(raw.calories * scaleFactor);
 
     // Scale protein and fat multipliers proportionally too
@@ -553,6 +595,7 @@ export default function MacroTracker() {
   const [selectedDay, setSelectedDay] = useState(null);
   const [showAddField, setShowAddField] = useState(false);
   const [showQuickWater, setShowQuickWater] = useState(false);
+  const [showQuickFood, setShowQuickFood] = useState(false);
   const [categories, setCategories] = useState(() => loadData(STORAGE_KEYS.categories, DEFAULT_CATEGORIES));
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [addFoodCategory, setAddFoodCategory] = useState(null);
@@ -617,6 +660,15 @@ export default function MacroTracker() {
     effectiveGoals.protein = activeDayTargets.protein;
     effectiveGoals.fat = activeDayTargets.fat;
     effectiveGoals.carbs = activeDayTargets.carbs;
+    // Merge manual micro overrides (fiber, sodium, etc.)
+    if (activeDayTargets.manualOverrides || (planTargets && planTargets.manualOverrides)) {
+      const overrides = activeDayTargets.manualOverrides || planTargets.manualOverrides || {};
+      for (const [key, val] of Object.entries(overrides)) {
+        if (val !== undefined && val !== null && val !== "") {
+          effectiveGoals[key] = parseFloat(val) || 0;
+        }
+      }
+    }
   }
 
   function addLogEntry(foodId, servings) {
@@ -645,6 +697,19 @@ export default function MacroTracker() {
       isQuickAdd: true,
       quickLabel: allFields.find(f => f.key === fieldKey)?.label || fieldKey,
       values: { [fieldKey]: amount },
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    }];
+    setLogs(newLogs);
+  }
+
+  function addQuickFoodEntry(label, values) {
+    const newLogs = { ...logs };
+    if (!newLogs[viewDate]) newLogs[viewDate] = [];
+    newLogs[viewDate] = [...newLogs[viewDate], {
+      id: generateId(),
+      isQuickAdd: true,
+      quickLabel: label,
+      values,
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     }];
     setLogs(newLogs);
@@ -822,9 +887,10 @@ export default function MacroTracker() {
             ))}
 
             {/* Action Buttons */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, marginBottom: 16 }}>
-              <Btn onClick={() => setShowLogEntry(true)}>+ Log Food</Btn>
-              <Btn variant="secondary" onClick={() => setShowQuickWater(true)}>+ Log Water</Btn>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 8, marginBottom: 16 }}>
+              <Btn onClick={() => setShowLogEntry(true)}>+ Food</Btn>
+              <Btn variant="secondary" onClick={() => setShowQuickWater(true)}>+ Water</Btn>
+              <Btn variant="secondary" onClick={() => setShowQuickFood(true)}>+ Quick</Btn>
             </div>
 
             {/* Entries */}
@@ -1122,22 +1188,65 @@ export default function MacroTracker() {
               {caloriePlan.cyclingEnabled && (
                 <>
                   <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.3px", color: "var(--text-muted)", marginTop: 8, marginBottom: 6 }}>Day Types</div>
-                  {(caloriePlan.dayTypes || []).map((dt, i) => (
+                  {(caloriePlan.dayTypes || []).map((dt, i) => {
+                    const isManual = dt.mode === "manual";
+                    const updateDT = (updates) => { const u = [...caloriePlan.dayTypes]; u[i] = { ...u[i], ...updates }; setCaloriePlan({ ...caloriePlan, dayTypes: u }); };
+                    return (
                     <div key={i} style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px", marginBottom: 6 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                        <input value={dt.name} onChange={e => { const u = [...caloriePlan.dayTypes]; u[i] = { ...u[i], name: e.target.value }; setCaloriePlan({ ...caloriePlan, dayTypes: u }); }} style={{ border: "none", background: "transparent", fontSize: 14, fontWeight: 600, fontFamily: "var(--font-body)", color: "var(--text)", outline: "none", width: 120 }} />
+                        <input value={dt.name} onChange={e => updateDT({ name: e.target.value })} style={{ border: "none", background: "transparent", fontSize: 14, fontWeight: 600, fontFamily: "var(--font-body)", color: "var(--text)", outline: "none", width: 120 }} />
                         <button onClick={() => setCaloriePlan({ ...caloriePlan, dayTypes: caloriePlan.dayTypes.filter((_, j) => j !== i) })} style={{ background: "none", border: "none", color: "#cc3333", cursor: "pointer", fontSize: 14 }}>×</button>
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
-                        {[["Cal Offset", "calOffset", "0"], ["P mult", "proteinMult", "1"], ["F mult", "fatMult", "1"]].map(([lbl, key, def]) => (
-                          <div key={key}>
-                            <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>{lbl}</div>
-                            <input type="number" inputMode="decimal" step={key === "calOffset" ? "50" : "0.1"} value={dt[key] !== undefined ? dt[key] : ""} onChange={e => { const u = [...caloriePlan.dayTypes]; u[i] = { ...u[i], [key]: parseFloat(e.target.value) || (key === "calOffset" ? 0 : 1) }; setCaloriePlan({ ...caloriePlan, dayTypes: u }); }} style={{ width: "100%", padding: "4px 6px", border: "1.5px solid var(--border)", borderRadius: 6, fontSize: 12, background: "#fff", color: "var(--text)", fontFamily: "var(--font-body)", outline: "none", textAlign: "center" }} />
-                          </div>
-                        ))}
+                      {/* Mode toggle */}
+                      <div style={{ display: "flex", gap: 0, marginBottom: 8, borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+                        <button onClick={() => updateDT({ mode: undefined })} style={{
+                          flex: 1, padding: "4px 0", fontSize: 10, fontWeight: 600, cursor: "pointer", border: "none",
+                          background: !isManual ? "var(--accent)" : "#fff", color: !isManual ? "#fff" : "var(--text-muted)", fontFamily: "var(--font-body)",
+                        }}>Relative</button>
+                        <button onClick={() => updateDT({ mode: "manual" })} style={{
+                          flex: 1, padding: "4px 0", fontSize: 10, fontWeight: 600, cursor: "pointer", border: "none", borderLeft: "1px solid var(--border)",
+                          background: isManual ? "var(--accent)" : "#fff", color: isManual ? "#fff" : "var(--text-muted)", fontFamily: "var(--font-body)",
+                        }}>Manual</button>
                       </div>
+                      {!isManual ? (
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                          {[["Cal Offset", "calOffset", "0"], ["P mult", "proteinMult", "1"], ["F mult", "fatMult", "1"]].map(([lbl, key, def]) => (
+                            <div key={key}>
+                              <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>{lbl}</div>
+                              <input type="number" inputMode="decimal" step={key === "calOffset" ? "50" : "0.1"} value={dt[key] !== undefined ? dt[key] : ""} onChange={e => updateDT({ [key]: parseFloat(e.target.value) || (key === "calOffset" ? 0 : 1) })} style={{ width: "100%", padding: "4px 6px", border: "1.5px solid var(--border)", borderRadius: 6, fontSize: 12, background: "#fff", color: "var(--text)", fontFamily: "var(--font-body)", outline: "none", textAlign: "center" }} />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <>
+                          {/* Manual macro targets */}
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 6 }}>
+                            {[["Calories", "manualCalories", "kcal"], ["Protein", "manualProtein", "g"], ["Fat", "manualFat", "g"], ["Carbs", "manualCarbs", "g"]].map(([lbl, key, unit]) => (
+                              <div key={key}>
+                                <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>{lbl} ({unit})</div>
+                                <input type="number" inputMode="decimal" value={dt[key] !== undefined ? dt[key] : ""} placeholder="—" onChange={e => updateDT({ [key]: e.target.value === "" ? undefined : parseFloat(e.target.value) || 0 })} style={{ width: "100%", padding: "4px 6px", border: "1.5px solid var(--border)", borderRadius: 6, fontSize: 12, background: "#fff", color: "var(--text)", fontFamily: "var(--font-body)", outline: "none", textAlign: "center" }} />
+                              </div>
+                            ))}
+                          </div>
+                          {/* Manual micro targets */}
+                          <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4, marginTop: 4 }}>Micro overrides (optional)</div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4 }}>
+                            {enabledFields.filter(f => !["calories","protein","fat","carbs"].includes(f.key)).map(f => (
+                              <div key={f.key}>
+                                <div style={{ fontSize: 9, color: "var(--text-muted)", marginBottom: 1 }}>{f.label}</div>
+                                <input type="number" inputMode="decimal" value={(dt.manualOverrides || {})[f.key] !== undefined ? (dt.manualOverrides || {})[f.key] : ""} placeholder="—" onChange={e => {
+                                  const overrides = { ...(dt.manualOverrides || {}) };
+                                  if (e.target.value === "") { delete overrides[f.key]; } else { overrides[f.key] = parseFloat(e.target.value) || 0; }
+                                  updateDT({ manualOverrides: overrides });
+                                }} style={{ width: "100%", padding: "3px 4px", border: "1.5px solid var(--border)", borderRadius: 5, fontSize: 11, background: "#fff", color: "var(--text)", fontFamily: "var(--font-body)", outline: "none", textAlign: "center" }} />
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                   <button onClick={() => setCaloriePlan({ ...caloriePlan, dayTypes: [...(caloriePlan.dayTypes || []), { name: "New", calOffset: 0, proteinMult: 1, fatMult: 1 }] })} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, fontWeight: 600, padding: "4px 0", fontFamily: "var(--font-body)", marginBottom: 12 }}>+ Add Day Type</button>
                   <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.3px", color: "var(--text-muted)", marginBottom: 6 }}>Weekly Schedule</div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 8 }}>
@@ -1390,6 +1499,7 @@ export default function MacroTracker() {
       <LogEntryModal open={showLogEntry} onClose={() => setShowLogEntry(false)} foods={foods} enabledFields={enabledFields} onAdd={addLogEntry} categories={categories} />
       <AddFieldModal open={showAddField} onClose={() => setShowAddField(false)} onAdd={addCustomField} />
       <QuickWaterModal open={showQuickWater} onClose={() => setShowQuickWater(false)} onAdd={(amt) => { addQuickEntry("water", amt); setShowQuickWater(false); }} waterUnit={fields.find(f => f.key === "water")?.unit || "oz"} />
+      <QuickFoodModal open={showQuickFood} onClose={() => setShowQuickFood(false)} enabledFields={enabledFields} onAdd={(label, values) => { addQuickFoodEntry(label, values); setShowQuickFood(false); }} />
       <AddCategoryModal open={showAddCategory} onClose={() => setShowAddCategory(false)} onAdd={(name) => { setCategories([...categories, name]); setShowAddCategory(false); }} existingCategories={categories} />
     </div>
   );
@@ -1451,6 +1561,41 @@ function QuickWaterModal({ open, onClose, onAdd, waterUnit }) {
           Add
         </Btn>
       </div>
+    </Modal>
+  );
+}
+
+// ─── Quick Food Modal (one-off entry) ────────────────────────────
+
+function QuickFoodModal({ open, onClose, enabledFields, onAdd }) {
+  const [label, setLabel] = useState("");
+  const [values, setValues] = useState({});
+
+  useEffect(() => { if (open) { setLabel(""); setValues({}); } }, [open]);
+
+  return (
+    <Modal open={open} onClose={onClose} title="Quick Add">
+      <FieldInput label="Label" value={label} onChange={setLabel} placeholder="e.g. Lunch at restaurant" />
+      <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", margin: "4px 0 8px" }}>
+        Nutrition
+      </div>
+      {enabledFields.map(f => (
+        <FieldInput key={f.key} label={f.label} unit={f.unit} type="number" step="any" placeholder="0"
+          value={values[f.key] !== undefined ? values[f.key] : ""}
+          onChange={v => setValues({ ...values, [f.key]: v })}
+        />
+      ))}
+      <Btn onClick={() => {
+        if (label.trim()) {
+          const parsed = {};
+          for (const [k, v] of Object.entries(values)) {
+            parsed[k] = typeof v === 'string' ? (parseFloat(v) || 0) : (v || 0);
+          }
+          onAdd(label.trim(), parsed);
+        }
+      }} disabled={!label.trim()} style={{ marginTop: 8 }}>
+        Add Entry
+      </Btn>
     </Modal>
   );
 }
