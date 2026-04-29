@@ -218,7 +218,7 @@ function computeTDEEProgress(weightLog, logs) {
 function computePlanTargets(caloriePlan, tdee, dateStr) {
   if (!tdee || tdee <= 0) return null;
 
-  const dailyDeficit = (caloriePlan.weeklyRate || 0) * 500;
+  const dailyDeficit = (parseFloat(caloriePlan.weeklyRate) || 0) * 500;
   const baseTarget = Math.round(tdee + dailyDeficit);
   const protein = caloriePlan.protein || 150;
   const fat = caloriePlan.fat || 65;
@@ -1156,7 +1156,56 @@ export default function MacroTracker() {
                   Estimated TDEE: <span style={{ fontWeight: 700, color: "var(--text)" }}>{tdeeForPlan.tdee} kcal/day</span>
                 </div>
               )}
-              <FieldInput label="Weekly Rate (lbs/week)" value={caloriePlan.weeklyRate !== undefined ? String(caloriePlan.weeklyRate) : ""} onChange={v => setCaloriePlan({ ...caloriePlan, weeklyRate: v === "" ? 0 : parseFloat(v) || 0 })} type="number" step="0.1" placeholder="e.g. -1.0" />
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: "var(--text-muted)", fontFamily: "var(--font-body)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  Weekly Rate (lbs/week)
+                </label>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    type="number" inputMode="decimal" step="0.1" min="0"
+                    value={Math.abs(parseFloat(caloriePlan.weeklyRate) || 0) || ""}
+                    onChange={e => {
+                      const abs = parseFloat(e.target.value) || 0;
+                      const sign = (parseFloat(caloriePlan.weeklyRate) || 0) >= 0 ? 1 : -1;
+                      setCaloriePlan({ ...caloriePlan, weeklyRate: sign * abs });
+                    }}
+                    placeholder="0.5"
+                    style={{
+                      flex: 1, padding: "10px 12px", border: "1.5px solid var(--border)", borderRadius: 10,
+                      fontSize: 15, background: "var(--input-bg)", color: "var(--text)", fontFamily: "var(--font-body)",
+                      outline: "none", boxSizing: "border-box",
+                    }}
+                    onFocus={e => e.target.style.borderColor = "var(--accent)"}
+                    onBlur={e => e.target.style.borderColor = "var(--border)"}
+                  />
+                  {/* Surplus / Deficit toggle */}
+                  <div style={{ display: "flex", borderRadius: 10, overflow: "hidden", border: "1.5px solid var(--border)", flexShrink: 0 }}>
+                    {[["Deficit", -1], ["Surplus", 1]].map(([label, sign]) => {
+                      const isActive = sign === -1
+                        ? (parseFloat(caloriePlan.weeklyRate) || 0) < 0
+                        : (parseFloat(caloriePlan.weeklyRate) || 0) >= 0;
+                      return (
+                        <button key={label} onClick={() => {
+                          const abs = Math.abs(parseFloat(caloriePlan.weeklyRate) || 0);
+                          setCaloriePlan({ ...caloriePlan, weeklyRate: sign * abs });
+                        }} style={{
+                          padding: "10px 12px", fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer",
+                          fontFamily: "var(--font-body)", transition: "all 0.15s",
+                          background: isActive ? "var(--accent)" : "var(--input-bg)",
+                          color: isActive ? "#fff" : "var(--text-muted)",
+                        }}>
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                {(parseFloat(caloriePlan.weeklyRate) || 0) !== 0 && (
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                    {Math.round(Math.abs(parseFloat(caloriePlan.weeklyRate) || 0) * 500)} kcal/day {(parseFloat(caloriePlan.weeklyRate) || 0) < 0 ? "deficit" : "surplus"}
+                  </div>
+                )}
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <FieldInput label="Protein (g/day)" value={caloriePlan.protein !== undefined ? String(caloriePlan.protein) : ""} onChange={v => setCaloriePlan({ ...caloriePlan, protein: parseFloat(v) || 0 })} type="number" step="1" placeholder="150" />
                 <FieldInput label="Fat (g/day)" value={caloriePlan.fat !== undefined ? String(caloriePlan.fat) : ""} onChange={v => setCaloriePlan({ ...caloriePlan, fat: parseFloat(v) || 0 })} type="number" step="1" placeholder="65" />
@@ -2831,3 +2880,4 @@ function BowelPanel({ bowelLog, setBowelLog }) {
     </>
   );
 }
+
