@@ -49,6 +49,15 @@ const DEFAULT_CATEGORIES = [
   "Other",
 ];
 
+const MEAL_TAGS = [
+  { key: "breakfast", label: "Breakfast", emoji: "🌅" },
+  { key: "lunch", label: "Lunch", emoji: "☀️" },
+  { key: "dinner", label: "Dinner", emoji: "🌙" },
+  { key: "snack", label: "Snack", emoji: "🍎" },
+  { key: "preWorkout", label: "Pre-Workout", emoji: "💪" },
+  { key: "other", label: "Other", emoji: "📦" },
+];
+
 const DEFAULT_SYMPTOMS = [
   { key: "dizzy", label: "Dizzy", emoji: "💫" },
   { key: "sleepy", label: "Sleepy", emoji: "😴" },
@@ -596,6 +605,7 @@ export default function MacroTracker() {
   const [showAddField, setShowAddField] = useState(false);
   const [showQuickWater, setShowQuickWater] = useState(false);
   const [showQuickFood, setShowQuickFood] = useState(false);
+  const [editingEntry, setEditingEntry] = useState(null); // { date, entry }
   const [categories, setCategories] = useState(() => loadData(STORAGE_KEYS.categories, DEFAULT_CATEGORIES));
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [addFoodCategory, setAddFoodCategory] = useState(null);
@@ -627,7 +637,7 @@ export default function MacroTracker() {
   const computeTotals = useCallback((entries) => {
     const totals = {};
     allFields.forEach(f => { totals[f.key] = 0; });
-    entries.forEach(entry => {
+    (entries || []).forEach(entry => {
       if (entry.isQuickAdd) {
         allFields.forEach(f => {
           totals[f.key] = (totals[f.key] || 0) + (entry.values?.[f.key] || 0);
@@ -671,10 +681,13 @@ export default function MacroTracker() {
     }
   }
 
-  function addLogEntry(foodId, servings) {
+  function addLogEntry(foodId, servings, mealTag) {
     const newLogs = { ...logs };
     if (!newLogs[viewDate]) newLogs[viewDate] = [];
-    newLogs[viewDate] = [...newLogs[viewDate], { id: generateId(), foodId, servings, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }];
+    newLogs[viewDate] = [...newLogs[viewDate], {
+      id: generateId(), foodId, servings, mealTag: mealTag || "other",
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    }];
     setLogs(newLogs);
 
     // Decrement remaining servings for queued foods
@@ -687,6 +700,15 @@ export default function MacroTracker() {
         depleted: remaining <= 0,
       } : f));
     }
+  }
+
+  function queueLogEntry(foodId, servings, mealTag) {
+    const newLogs = { ...logs };
+    if (!newLogs[viewDate]) newLogs[viewDate] = [];
+    newLogs[viewDate] = [...newLogs[viewDate], {
+      id: generateId(), foodId, servings, mealTag: mealTag || "other", planned: true, time: "",
+    }];
+    setLogs(newLogs);
   }
 
   function addQuickEntry(fieldKey, amount) {
@@ -702,7 +724,7 @@ export default function MacroTracker() {
     setLogs(newLogs);
   }
 
-  function addQuickFoodEntry(label, values) {
+  function addQuickFoodEntry(label, values, mealTag) {
     const newLogs = { ...logs };
     if (!newLogs[viewDate]) newLogs[viewDate] = [];
     newLogs[viewDate] = [...newLogs[viewDate], {
@@ -710,8 +732,51 @@ export default function MacroTracker() {
       isQuickAdd: true,
       quickLabel: label,
       values,
+      mealTag: mealTag || "other",
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     }];
+    setLogs(newLogs);
+  }
+
+  function queueQuickFoodEntry(label, values, mealTag) {
+    const newLogs = { ...logs };
+    if (!newLogs[viewDate]) newLogs[viewDate] = [];
+    newLogs[viewDate] = [...newLogs[viewDate], {
+      id: generateId(),
+      isQuickAdd: true,
+      quickLabel: label,
+      values,
+      mealTag: mealTag || "other",
+      planned: true,
+      time: "",
+    }];
+    setLogs(newLogs);
+  }
+
+  function updateLogEntry(date, updatedEntry) {
+    const newLogs = { ...logs };
+    newLogs[date] = newLogs[date].map(e => e.id === updatedEntry.id ? updatedEntry : e);
+    setLogs(newLogs);
+    setEditingEntry(null);
+  }
+
+  function addPlannedEntry(targetDate, foodId, servings, label, isQuickAdd, values) {
+    const newLogs = { ...logs };
+    if (!newLogs[targetDate]) newLogs[targetDate] = [];
+    const entry = isQuickAdd
+      ? { id: generateId(), isQuickAdd: true, quickLabel: label, values, planned: true, time: "" }
+      : { id: generateId(), foodId, servings, planned: true, time: "" };
+    newLogs[targetDate] = [...newLogs[targetDate], entry];
+    setLogs(newLogs);
+  }
+
+  function checkOffPlannedEntry(date, entryId) {
+    const newLogs = { ...logs };
+    newLogs[date] = newLogs[date].map(e => e.id === entryId ? {
+      ...e,
+      planned: false,
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    } : e);
     setLogs(newLogs);
   }
 
@@ -893,57 +958,22 @@ export default function MacroTracker() {
               <Btn variant="secondary" onClick={() => setShowQuickFood(true)}>+ Quick</Btn>
             </div>
 
-            {/* Entries */}
+            {/* Entries grouped by meal tag */}
             <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: 8 }}>
               {isToday ? "Today's Entries" : "Entries"}
             </div>
             {viewEntries.length === 0 ? (
-              <EmptyState icon="🍽" title="No entries yet" subtitle="Tap 'Log Food' to get started" />
+              <EmptyState icon="🍽" title="No entries yet" subtitle="Tap '+ Food' to get started" />
             ) : (
-              viewEntries.map(entry => {
-                if (entry.isQuickAdd) {
-                  const val = Object.entries(entry.values || {})[0];
-                  const field = allFields.find(f => f.key === val?.[0]);
-                  return (
-                    <div key={entry.id} style={{
-                      background: "var(--card-bg)", borderRadius: 12, padding: "12px 14px", marginBottom: 8,
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                      boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
-                    }}>
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 600 }}>{entry.quickLabel || "Quick Add"}</div>
-                        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                          +{val?.[1]}{field?.unit || ""} · {entry.time}
-                        </div>
-                      </div>
-                      <button onClick={() => removeLogEntry(viewDate, entry.id)} style={{
-                        background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, fontSize: 18, lineHeight: 1,
-                      }}>×</button>
-                    </div>
-                  );
-                }
-                const food = foods.find(f => f.id === entry.foodId);
-                if (!food) return null;
-                return (
-                  <div key={entry.id} style={{
-                    background: "var(--card-bg)", borderRadius: 12, padding: "12px 14px", marginBottom: 8,
-                    display: "flex", justifyContent: "space-between", alignItems: "center",
-                    boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
-                  }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>{food.name}</div>
-                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                        {entry.servings} serving{entry.servings !== 1 ? "s" : ""} · {entry.time}
-                        {enabledFields.length > 0 && " · "}
-                        {enabledFields.slice(0, 3).map(f => `${Math.round((food.nutrition[f.key] || 0) * entry.servings)}${f.unit}`).join(" / ")}
-                      </div>
-                    </div>
-                    <button onClick={() => removeLogEntry(viewDate, entry.id)} style={{
-                      background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, fontSize: 18, lineHeight: 1,
-                    }}>×</button>
-                  </div>
-                );
-              })
+              <MealGroupedEntries
+                entries={viewEntries}
+                foods={foods}
+                allFields={allFields}
+                enabledFields={enabledFields}
+                onRemove={(id) => removeLogEntry(viewDate, id)}
+                onCheckOff={(id) => checkOffPlannedEntry(viewDate, id)}
+                onEdit={(entry) => setEditingEntry({ date: viewDate, entry })}
+              />
             )}
           </>
         )}
@@ -1545,10 +1575,11 @@ export default function MacroTracker() {
 
       {/* ─── Modals ──────────────────────────────────────────── */}
       <AddFoodModal open={showAddFood} onClose={() => { setShowAddFood(false); setEditFood(null); setAddFoodCategory(null); }} onSave={saveFood} editFood={editFood} allFields={allFields} enabledFields={enabledFields} categories={categories} defaultCategory={addFoodCategory} foods={foods} />
-      <LogEntryModal open={showLogEntry} onClose={() => setShowLogEntry(false)} foods={foods} enabledFields={enabledFields} onAdd={addLogEntry} categories={categories} />
+      <LogEntryModal open={showLogEntry} onClose={() => setShowLogEntry(false)} foods={foods} enabledFields={enabledFields} onAdd={addLogEntry} onQueue={queueLogEntry} categories={categories} />
       <AddFieldModal open={showAddField} onClose={() => setShowAddField(false)} onAdd={addCustomField} />
       <QuickWaterModal open={showQuickWater} onClose={() => setShowQuickWater(false)} onAdd={(amt) => { addQuickEntry("water", amt); setShowQuickWater(false); }} waterUnit={fields.find(f => f.key === "water")?.unit || "oz"} />
-      <QuickFoodModal open={showQuickFood} onClose={() => setShowQuickFood(false)} enabledFields={enabledFields} onAdd={(label, values) => { addQuickFoodEntry(label, values); setShowQuickFood(false); }} />
+      <QuickFoodModal open={showQuickFood} onClose={() => setShowQuickFood(false)} enabledFields={enabledFields} onAdd={(label, values, mealTag) => { addQuickFoodEntry(label, values, mealTag); setShowQuickFood(false); }} onQueue={(label, values, mealTag) => { queueQuickFoodEntry(label, values, mealTag); setShowQuickFood(false); }} />
+      {editingEntry && <EditEntryModal entry={editingEntry.entry} date={editingEntry.date} foods={foods} enabledFields={enabledFields} allFields={allFields} onSave={(updated) => updateLogEntry(editingEntry.date, updated)} onClose={() => setEditingEntry(null)} />}
       <AddCategoryModal open={showAddCategory} onClose={() => setShowAddCategory(false)} onAdd={(name) => { setCategories([...categories, name]); setShowAddCategory(false); }} existingCategories={categories} />
     </div>
   );
@@ -1616,11 +1647,22 @@ function QuickWaterModal({ open, onClose, onAdd, waterUnit }) {
 
 // ─── Quick Food Modal (one-off entry) ────────────────────────────
 
-function QuickFoodModal({ open, onClose, enabledFields, onAdd }) {
+function QuickFoodModal({ open, onClose, enabledFields, onAdd, onQueue }) {
   const [label, setLabel] = useState("");
   const [values, setValues] = useState({});
+  const [mealTag, setMealTag] = useState("other");
 
-  useEffect(() => { if (open) { setLabel(""); setValues({}); } }, [open]);
+  useEffect(() => { if (open) { setLabel(""); setValues({}); setMealTag("other"); } }, [open]);
+
+  function handleSubmit(planned) {
+    if (!label.trim()) return;
+    const parsed = {};
+    for (const [k, v] of Object.entries(values)) {
+      parsed[k] = typeof v === 'string' ? (parseFloat(v) || 0) : (v || 0);
+    }
+    if (planned) onQueue(label.trim(), parsed, mealTag);
+    else onAdd(label.trim(), parsed, mealTag);
+  }
 
   return (
     <Modal open={open} onClose={onClose} title="Quick Add">
@@ -1634,21 +1676,30 @@ function QuickFoodModal({ open, onClose, enabledFields, onAdd }) {
           onChange={v => setValues({ ...values, [f.key]: v })}
         />
       ))}
-      <Btn onClick={() => {
-        if (label.trim()) {
-          const parsed = {};
-          for (const [k, v] of Object.entries(values)) {
-            parsed[k] = typeof v === 'string' ? (parseFloat(v) || 0) : (v || 0);
-          }
-          onAdd(label.trim(), parsed);
-        }
-      }} disabled={!label.trim()} style={{ marginTop: 8 }}>
-        Add Entry
-      </Btn>
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.5px" }}>Meal</label>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {MEAL_TAGS.map(t => (
+            <button key={t.key} onClick={() => setMealTag(t.key)} style={{
+              padding: "5px 10px", borderRadius: 16, fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer",
+              fontFamily: "var(--font-body)",
+              background: mealTag === t.key ? "var(--accent)" : "var(--input-bg)",
+              color: mealTag === t.key ? "#fff" : "var(--text-muted)",
+            }}>{t.emoji} {t.label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr", gap: 8, marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose} style={{ width: "auto", padding: "11px 16px" }}>✕</Btn>
+        <Btn variant="secondary" onClick={() => handleSubmit(true)} disabled={!label.trim()}>Queue</Btn>
+        <Btn onClick={() => handleSubmit(false)} disabled={!label.trim()}>Add</Btn>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--text-muted)", textAlign: "center", marginTop: 6 }}>
+        Queue = planned, shows but doesn't log until checked off
+      </div>
     </Modal>
   );
 }
-
 // ─── Add/Edit Food Modal ─────────────────────────────────────────
 
 function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledFields, categories, defaultCategory, foods }) {
@@ -1926,12 +1977,13 @@ function AddFoodModal({ open, onClose, onSave, editFood, allFields, enabledField
 
 // ─── Log Entry Modal ─────────────────────────────────────────────
 
-function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories }) {
+function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, onQueue, categories }) {
   const [search, setSearch] = useState("");
   const [selectedFood, setSelectedFood] = useState(null);
   const [servings, setServings] = useState("1");
+  const [mealTag, setMealTag] = useState("other");
 
-  useEffect(() => { if (open) { setSearch(""); setSelectedFood(null); setServings("1"); } }, [open]);
+  useEffect(() => { if (open) { setSearch(""); setSelectedFood(null); setServings("1"); setMealTag("other"); } }, [open]);
 
   // Filter out depleted/hidden foods
   const availableFoods = foods.filter(f => !f.depleted && !f.hidden);
@@ -1941,7 +1993,14 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories 
   function handleAdd() {
     if (!selectedFood) return;
     const s = parseFloat(servings) || 1;
-    onAdd(selectedFood.id, s);
+    onAdd(selectedFood.id, s, mealTag);
+    onClose();
+  }
+
+  function handleQueue() {
+    if (!selectedFood) return;
+    const s = parseFloat(servings) || 1;
+    onQueue(selectedFood.id, s, mealTag);
     onClose();
   }
 
@@ -2021,6 +2080,20 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories 
             </div>
           </div>
           <FieldInput label={maxServings !== null ? `Servings (max ${Math.round(maxServings * 100) / 100})` : "Number of Servings"} value={servings} onChange={setServings} type="number" placeholder="1" step="any" />
+          {/* Meal tag picker */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.5px" }}>Meal</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {MEAL_TAGS.map(t => (
+                <button key={t.key} onClick={() => setMealTag(t.key)} style={{
+                  padding: "5px 10px", borderRadius: 16, fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer",
+                  fontFamily: "var(--font-body)",
+                  background: mealTag === t.key ? "var(--accent)" : "var(--input-bg)",
+                  color: mealTag === t.key ? "#fff" : "var(--text-muted)",
+                }}>{t.emoji} {t.label}</button>
+              ))}
+            </div>
+          </div>
           {servingsExceedsMax && (
             <div style={{ fontSize: 12, color: "#EF4444", marginTop: -8, marginBottom: 8 }}>
               Only {Math.round(maxServings * 100) / 100} servings remaining
@@ -2034,9 +2107,13 @@ function LogEntryModal({ open, onClose, foods, enabledFields, onAdd, categories 
               ))}
             </div>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Btn variant="secondary" onClick={() => setSelectedFood(null)}>Back</Btn>
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr", gap: 8, marginTop: 4 }}>
+            <Btn variant="secondary" onClick={() => setSelectedFood(null)} style={{ width: "auto", padding: "11px 16px" }}>←</Btn>
+            <Btn variant="secondary" onClick={handleQueue} disabled={!servings || parseFloat(servings) <= 0 || servingsExceedsMax}>Queue</Btn>
             <Btn onClick={handleAdd} disabled={!servings || parseFloat(servings) <= 0 || servingsExceedsMax}>Add</Btn>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", textAlign: "center", marginTop: 6 }}>
+            Queue = planned, doesn't count until checked off
           </div>
         </>
       )}
@@ -2087,10 +2164,205 @@ function AddCategoryModal({ open, onClose, onAdd, existingCategories }) {
   );
 }
 
+// ─── Meal Grouped Entries ─────────────────────────────────────────
+
+function MealGroupedEntries({ entries, foods, allFields, enabledFields, onRemove, onCheckOff, onEdit }) {
+  const [expanded, setExpanded] = useState({});
+
+  const groups = {};
+  MEAL_TAGS.forEach(t => { groups[t.key] = []; });
+  entries.forEach(entry => {
+    const tag = entry.mealTag || "other";
+    if (!groups[tag]) groups[tag] = [];
+    groups[tag].push(entry);
+  });
+
+  const getEntryNutrition = (entry) => {
+    const totals = {};
+    allFields.forEach(f => { totals[f.key] = 0; });
+    if (entry.isQuickAdd) {
+      allFields.forEach(f => { totals[f.key] = entry.values?.[f.key] || 0; });
+    } else {
+      const food = foods.find(f => f.id === entry.foodId);
+      if (food) allFields.forEach(f => { totals[f.key] = (food.nutrition[f.key] || 0) * (entry.servings || 1); });
+    }
+    return totals;
+  };
+
+  const getGroupTotals = (groupEntries) => {
+    const totals = {};
+    allFields.forEach(f => { totals[f.key] = 0; });
+    groupEntries.forEach(entry => {
+      const n = getEntryNutrition(entry);
+      allFields.forEach(f => { totals[f.key] = (totals[f.key] || 0) + (n[f.key] || 0); });
+    });
+    return totals;
+  };
+
+  return (
+    <>
+      {MEAL_TAGS.map(tag => {
+        const groupEntries = groups[tag.key] || [];
+        if (groupEntries.length === 0) return null;
+        const groupTotals = getGroupTotals(groupEntries);
+        const isOpen = expanded[tag.key];
+        const hasPlanned = groupEntries.some(e => e.planned);
+        return (
+          <div key={tag.key} style={{ marginBottom: 8 }}>
+            {/* Group header */}
+            <div onClick={() => setExpanded({ ...expanded, [tag.key]: !isOpen })} style={{
+              background: "var(--card-bg)", borderRadius: isOpen ? "12px 12px 0 0" : 12,
+              padding: "11px 14px", cursor: "pointer", boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              borderLeft: hasPlanned ? "3px solid #3B82F6" : "3px solid var(--accent)",
+            }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+                  {tag.emoji} {tag.label}
+                  <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-muted)" }}>({groupEntries.length})</span>
+                  {hasPlanned && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 6, background: "#DBEAFE", color: "#1D4ED8" }}>PLANNED</span>}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {enabledFields.slice(0, 4).map(f => (
+                    groupTotals[f.key] > 0 ? (
+                      <span key={f.key}><span style={{ fontWeight: 600, color: "var(--text)" }}>{Math.round(groupTotals[f.key] * 10) / 10}</span>{f.unit} {f.label}</span>
+                    ) : null
+                  ))}
+                </div>
+              </div>
+              <span style={{ color: "var(--text-muted)", fontSize: 14, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>▾</span>
+            </div>
+            {/* Expanded entries */}
+            {isOpen && (
+              <div style={{ background: "var(--card-bg)", borderRadius: "0 0 12px 12px", borderTop: "1px solid var(--border)", padding: "0 0 4px" }}>
+                {groupEntries.map(entry => {
+                  const isPlanned = !!entry.planned;
+                  const name = entry.isQuickAdd ? (entry.quickLabel || "Quick Add") : (foods.find(f => f.id === entry.foodId)?.name || "Unknown");
+                  const n = getEntryNutrition(entry);
+                  return (
+                    <div key={entry.id} style={{
+                      display: "flex", alignItems: "center", padding: "10px 14px",
+                      borderBottom: "1px solid var(--border)", gap: 8,
+                      background: isPlanned ? "#F0F7FF" : "transparent",
+                    }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{name}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {!entry.isQuickAdd && <span>{entry.servings} serving{entry.servings !== 1 ? "s" : ""}</span>}
+                          {enabledFields.slice(0, 3).map(f => n[f.key] > 0 ? (
+                            <span key={f.key}>{Math.round(n[f.key] * 10) / 10}{f.unit} {f.label}</span>
+                          ) : null)}
+                          {!isPlanned && entry.time && <span>· {entry.time}</span>}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
+                        {isPlanned && (
+                          <button onClick={() => onCheckOff(entry.id)} style={{
+                            background: "#3B82F6", border: "none", borderRadius: 8, color: "#fff",
+                            cursor: "pointer", padding: "4px 10px", fontSize: 13, fontWeight: 600,
+                          }}>✓</button>
+                        )}
+                        <button onClick={() => onEdit(entry)} style={{
+                          background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontWeight: 600, padding: "2px 6px",
+                        }}>edit</button>
+                        <button onClick={() => onRemove(entry.id)} style={{
+                          background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 16, padding: 2,
+                        }}>×</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ─── Edit Entry Modal ─────────────────────────────────────────────
+
+function EditEntryModal({ entry, date, foods, enabledFields, allFields, onSave, onClose }) {
+  const food = !entry.isQuickAdd ? foods.find(f => f.id === entry.foodId) : null;
+
+  // For quick-add entries
+  const [label, setLabel] = useState(entry.quickLabel || "");
+  const [values, setValues] = useState(
+    Object.fromEntries(enabledFields.map(f => [f.key, entry.values?.[f.key] !== undefined ? String(entry.values[f.key]) : ""]))
+  );
+  // For food entries
+  const [servings, setServings] = useState(String(entry.servings || 1));
+  // Shared
+  const [mealTag, setMealTag] = useState(entry.mealTag || "other");
+
+  function handleSave() {
+    if (entry.isQuickAdd) {
+      const parsed = {};
+      for (const [k, v] of Object.entries(values)) {
+        parsed[k] = typeof v === 'string' ? (parseFloat(v) || 0) : (v || 0);
+      }
+      onSave({ ...entry, quickLabel: label.trim() || entry.quickLabel, values: parsed, mealTag });
+    } else {
+      onSave({ ...entry, servings: parseFloat(servings) || 1, mealTag });
+    }
+  }
+
+  return (
+    <Modal open={true} onClose={onClose} title="Edit Entry">
+      {entry.isQuickAdd ? (
+        <>
+          <FieldInput label="Label" value={label} onChange={setLabel} placeholder="Entry name" />
+          <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", margin: "4px 0 8px" }}>
+            Nutrition
+          </div>
+          {enabledFields.map(f => (
+            <FieldInput key={f.key} label={f.label} unit={f.unit} type="number" step="any" placeholder="0"
+              value={values[f.key] !== undefined ? values[f.key] : ""}
+              onChange={v => setValues({ ...values, [f.key]: v })}
+            />
+          ))}
+        </>
+      ) : (
+        <>
+          <div style={{ background: "var(--input-bg)", borderRadius: 12, padding: "12px 14px", marginBottom: 12 }}>
+            <div style={{ fontSize: 15, fontWeight: 600 }}>{food?.name || "Unknown food"}</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+              Per {food?.servingSize} {food?.servingUnit}
+            </div>
+          </div>
+          <FieldInput label="Servings" value={servings} onChange={setServings} type="number" step="any" placeholder="1" />
+        </>
+      )}
+
+      {/* Meal tag */}
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.5px" }}>Meal</label>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {MEAL_TAGS.map(t => (
+            <button key={t.key} onClick={() => setMealTag(t.key)} style={{
+              padding: "5px 10px", borderRadius: 16, fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer",
+              fontFamily: "var(--font-body)",
+              background: mealTag === t.key ? "var(--accent)" : "var(--input-bg)",
+              color: mealTag === t.key ? "#fff" : "var(--text-muted)",
+            }}>{t.emoji} {t.label}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={handleSave}>Save</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── Stats Panel ─────────────────────────────────────────────────
 
 function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLog, allFields, caloriePlan, weeklyPlan, tdeeForPlan }) {
   const [range, setRange] = useState("7");
+  const [expandedWeeks, setExpandedWeeks] = useState({});
   const sortedDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
 
   const daysToUse = range === "all"
@@ -2107,6 +2379,36 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLo
     const sum = dayTotals.reduce((acc, t) => acc + (t[f.key] || 0), 0);
     averages[f.key] = daysToUse.length > 0 ? sum / daysToUse.length : 0;
   });
+
+  // Meal tag breakdown across selected range
+  const mealTotals = {};
+  MEAL_TAGS.forEach(t => { mealTotals[t.key] = { calories: 0, days: 0 }; });
+  let totalCaloriesAllMeals = 0;
+  daysToUse.forEach(day => {
+    const entries = logs[day] || [];
+    entries.forEach(entry => {
+      const tag = entry.mealTag || "other";
+      let cals = 0;
+      if (entry.isQuickAdd) {
+        cals = entry.values?.calories || 0;
+      } else {
+        const food = foods.find(f => f.id === entry.foodId);
+        if (food) cals = (food.nutrition?.calories || 0) * (entry.servings || 1);
+      }
+      if (!mealTotals[tag]) mealTotals[tag] = { calories: 0, days: 0 };
+      mealTotals[tag].calories += cals;
+      totalCaloriesAllMeals += cals;
+    });
+  });
+
+  // Group daysToUse by week (Mon-Sun)
+  const weekGroups = {};
+  daysToUse.forEach(day => {
+    const monday = getWeekMonday(day);
+    if (!weekGroups[monday]) weekGroups[monday] = [];
+    weekGroups[monday].push(day);
+  });
+  const sortedWeeks = Object.keys(weekGroups).sort((a, b) => b.localeCompare(a));
 
   return (
     <>
@@ -2253,10 +2555,16 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLo
                 <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", marginBottom: 12 }}>
                   Calorie Plan
                 </div>
-                <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>
+                <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>
                   Rate: <span style={{ fontWeight: 600, color: "var(--text)" }}>{caloriePlan.weeklyRate > 0 ? "+" : ""}{caloriePlan.weeklyRate} lbs/week</span>
                   {" → "}
                   <span style={{ fontWeight: 600, color: "var(--text)" }}>{Math.round(Math.abs(caloriePlan.weeklyRate) * 500)} kcal/day {caloriePlan.weeklyRate < 0 ? "deficit" : caloriePlan.weeklyRate > 0 ? "surplus" : ""}</span>
+                </div>
+                <div style={{ background: "var(--accent-light)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>Weekly avg target</span>
+                  <span style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)", color: "var(--accent)" }}>
+                    {Math.round(weeklyPlan.weeklyCalTarget / 7)} kcal/day
+                  </span>
                 </div>
 
                 {/* Weekly summary bar */}
@@ -2335,20 +2643,89 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLo
           })()}
 
           <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", margin: "20px 0 10px" }}>
-            Daily Breakdown
+            Calories by Meal
           </div>
-          {daysToUse.map((day, di) => {
-            const totals = dayTotals[di];
-            return (
-              <div key={day} style={{ background: "var(--card-bg)", borderRadius: 12, padding: "12px 16px", marginBottom: 6, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{formatDate(day)}</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 14px" }}>
-                  {enabledFields.map(f => (
-                    <span key={f.key} style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                      {f.label}: <span style={{ fontWeight: 600, color: "var(--text)" }}>{Math.round((totals[f.key] || 0) * 10) / 10}</span>{f.unit}
-                    </span>
-                  ))}
+          <div style={{ background: "var(--card-bg)", borderRadius: 14, overflow: "hidden", marginBottom: 20, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+            {MEAL_TAGS.map((tag, i) => {
+              const data = mealTotals[tag.key] || { calories: 0 };
+              const avgCals = daysToUse.length > 0 ? data.calories / daysToUse.length : 0;
+              const pct = totalCaloriesAllMeals > 0 ? (data.calories / totalCaloriesAllMeals) * 100 : 0;
+              if (data.calories === 0) return null;
+              return (
+                <div key={tag.key} style={{
+                  padding: "10px 16px", borderBottom: i < MEAL_TAGS.length - 1 ? "1px solid var(--border)" : "none",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{tag.emoji} {tag.label}</span>
+                    <div style={{ textAlign: "right" }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{Math.round(avgCals)}</span>
+                      <span style={{ fontSize: 11, color: "var(--text-muted)" }}> kcal/day</span>
+                      <span style={{ fontSize: 12, color: "var(--accent)", fontWeight: 600, marginLeft: 8 }}>{Math.round(pct)}%</span>
+                    </div>
+                  </div>
+                  <div style={{ height: 4, borderRadius: 2, background: "var(--border)" }}>
+                    <div style={{ height: "100%", borderRadius: 2, background: "var(--accent)", width: `${pct}%` }} />
+                  </div>
                 </div>
+              );
+            })}
+          </div>
+
+          <div style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", margin: "0 0 10px" }}>
+            Weekly Breakdown
+          </div>
+          {sortedWeeks.map(monday => {
+            const weekDays = weekGroups[monday].sort((a, b) => a.localeCompare(b));
+            const weekTotals = {};
+            enabledFields.forEach(f => { weekTotals[f.key] = 0; });
+            weekDays.forEach(day => {
+              const t = computeTotals(logs[day] || []);
+              enabledFields.forEach(f => { weekTotals[f.key] += t[f.key] || 0; });
+            });
+            const weekAvg = {};
+            enabledFields.forEach(f => { weekAvg[f.key] = weekTotals[f.key] / weekDays.length; });
+            const isOpen = expandedWeeks[monday];
+
+            // Week label: Mon date - Sun date
+            const weekEnd = new Date(monday + "T12:00:00");
+            weekEnd.setDate(weekEnd.getDate() + 6);
+            const weekLabel = `${formatDate(monday)} – ${weekEnd.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+
+            return (
+              <div key={monday} style={{ marginBottom: 8 }}>
+                <div onClick={() => setExpandedWeeks({ ...expandedWeeks, [monday]: !isOpen })} style={{
+                  background: "var(--card-bg)", borderRadius: isOpen ? "12px 12px 0 0" : 12,
+                  padding: "12px 16px", cursor: "pointer", boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{weekLabel}</div>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                      {weekDays.length} day{weekDays.length !== 1 ? "s" : ""} avg · {" "}
+                      {enabledFields.slice(0, 3).map(f => `${Math.round(weekAvg[f.key] || 0)}${f.unit} ${f.label}`).join(" · ")}
+                    </div>
+                  </div>
+                  <span style={{ color: "var(--text-muted)", transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>▾</span>
+                </div>
+                {isOpen && (
+                  <div style={{ background: "var(--card-bg)", borderRadius: "0 0 12px 12px", borderTop: "1px solid var(--border)", padding: "4px 0 8px" }}>
+                    {weekDays.map(day => {
+                      const totals = computeTotals(logs[day] || []);
+                      return (
+                        <div key={day} style={{ padding: "8px 16px", borderBottom: "1px solid var(--border)" }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 3 }}>{formatDate(day)}</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 14px" }}>
+                            {enabledFields.map(f => (
+                              <span key={f.key} style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                {f.label}: <span style={{ fontWeight: 600, color: "var(--text)" }}>{Math.round((totals[f.key] || 0) * 10) / 10}</span>{f.unit}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}
