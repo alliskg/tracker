@@ -94,15 +94,14 @@ const STORAGE_KEYS = {
   bowelLog: "mt_bowel_log",
 };
 
-const TABS = ["today", "weight", "symptoms", "bowel", "foods", "log", "stats", "settings"];
-const TAB_LABELS = { today: "Today", weight: "Weight", symptoms: "Notes", bowel: "Bowel", foods: "Foods", log: "Log", stats: "Stats", settings: "Settings" };
+const TABS = ["today", "weight", "symptoms", "bowel", "foods", "stats", "settings"];
+const TAB_LABELS = { today: "Today", weight: "Weight", symptoms: "Notes", bowel: "Bowel", foods: "Foods", stats: "Stats", settings: "Settings" };
 const TAB_ICONS = {
   today: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
   weight: "M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3",
   symptoms: "M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z",
   bowel: "M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z",
   foods: "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
-  log: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
   stats: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
   settings: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z",
 };
@@ -601,7 +600,6 @@ export default function MacroTracker() {
   const [showAddFood, setShowAddFood] = useState(false);
   const [showLogEntry, setShowLogEntry] = useState(false);
   const [editFood, setEditFood] = useState(null);
-  const [selectedDay, setSelectedDay] = useState(null);
   const [showAddField, setShowAddField] = useState(false);
   const [showQuickWater, setShowQuickWater] = useState(false);
   const [showQuickFood, setShowQuickFood] = useState(false);
@@ -844,8 +842,6 @@ export default function MacroTracker() {
     setViewDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
   }
 
-  const sortedLogDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
-
   // ─── RENDER ──────────────────────────────────────────────────
 
   return (
@@ -1079,68 +1075,6 @@ export default function MacroTracker() {
         )}
 
         {/* ═══ LOG TAB ═══ */}
-        {tab === "log" && (
-          <>
-            {sortedLogDays.length === 0 ? (
-              <EmptyState icon="📋" title="No history" subtitle="Start logging food to see your daily summaries" />
-            ) : (
-              sortedLogDays.map(day => {
-                const entries = logs[day];
-                const totals = computeTotals(entries);
-                const isSelected = selectedDay === day;
-                return (
-                  <div key={day} style={{ marginBottom: 10 }}>
-                    <div onClick={() => setSelectedDay(isSelected ? null : day)} style={{
-                      background: "var(--card-bg)", borderRadius: isSelected ? "12px 12px 0 0" : 12, padding: "14px 16px", cursor: "pointer",
-                      boxShadow: "0 1px 4px rgba(0,0,0,0.04)", display: "flex", justifyContent: "space-between", alignItems: "center",
-                    }}>
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 600 }}>{formatDate(day)}</div>
-                        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                          {entries.length} item{entries.length !== 1 ? "s" : ""}
-                          {enabledFields.length > 0 && " · "}
-                          {enabledFields.slice(0, 3).map(f => `${Math.round(totals[f.key] || 0)} ${f.unit}`).join(" / ")}
-                        </div>
-                      </div>
-                      <span style={{ color: "var(--text-muted)", transform: isSelected ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>▾</span>
-                    </div>
-                    {isSelected && (
-                      <div style={{ background: "var(--card-bg)", borderRadius: "0 0 12px 12px", padding: "0 16px 14px", borderTop: "1px solid var(--border)" }}>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", padding: "12px 0 8px" }}>
-                          {enabledFields.map(f => (
-                            <div key={f.key} style={{ fontSize: 13 }}>
-                              <span style={{ color: "var(--text-muted)" }}>{f.label}:</span>{" "}
-                              <span style={{ fontWeight: 600 }}>{Math.round((totals[f.key] || 0) * 10) / 10}{f.unit}</span>
-                            </div>
-                          ))}
-                        </div>
-                        {entries.map(entry => {
-                          if (entry.isQuickAdd) {
-                            const val = Object.entries(entry.values || {})[0];
-                            return (
-                              <div key={entry.id} style={{ fontSize: 12, color: "var(--text-muted)", padding: "4px 0", display: "flex", justifyContent: "space-between" }}>
-                                <span>{entry.quickLabel} +{val?.[1]}</span>
-                                <button onClick={() => removeLogEntry(day, entry.id)} style={{ background: "none", border: "none", color: "#cc3333", cursor: "pointer", fontSize: 11, padding: 0 }}>remove</button>
-                              </div>
-                            );
-                          }
-                          const food = foods.find(f => f.id === entry.foodId);
-                          return (
-                            <div key={entry.id} style={{ fontSize: 12, color: "var(--text-muted)", padding: "4px 0", display: "flex", justifyContent: "space-between" }}>
-                              <span>{food ? food.name : "Unknown"} × {entry.servings}</span>
-                              <button onClick={() => removeLogEntry(day, entry.id)} style={{ background: "none", border: "none", color: "#cc3333", cursor: "pointer", fontSize: 11, padding: 0 }}>remove</button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </>
-        )}
-
         {/* ═══ WEIGHT TAB ═══ */}
         {tab === "weight" && <WeightPanel weightLog={weightLog} setWeightLog={setWeightLog} logs={logs} foods={foods} allFields={allFields} />}
 
