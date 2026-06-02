@@ -92,6 +92,7 @@ const STORAGE_KEYS = {
   symptomLog: "mt_symptom_log",
   caloriePlan: "mt_calorie_plan",
   bowelLog: "mt_bowel_log",
+  appSettings: "mt_app_settings",
 };
 
 const TABS = ["today", "weight", "symptoms", "bowel", "foods", "stats", "settings"];
@@ -112,6 +113,10 @@ function generateId() {
 
 function todayStr() {
   const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function toDateStr(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
@@ -150,35 +155,28 @@ function computeSmoothedWeights(weightLog) {
   return results;
 }
 
-function computeTDEE(smoothedWeights, logs, allFields, foods, numDays = 28) {
-  // Need at least 2 weeks of data for meaningful results
-  if (smoothedWeights.length < 14) return null;
+function computeTDEE(weightLog, logs, allFields, foods, method = "endpoint") {
+  const allWeightDates = Object.keys(weightLog).sort();
+  if (allWeightDates.length === 0) return null;
 
-  const endIdx = smoothedWeights.length - 1;
-  const startIdx = Math.max(0, endIdx - numDays);
-  const startEntry = smoothedWeights[startIdx];
-  const endEntry = smoothedWeights[endIdx];
+  // Window: 28 calendar days ending at the most recent weight log date (Option B anchor)
+  const anchorStr = allWeightDates[allWeightDates.length - 1];
+  const anchorDate = new Date(anchorStr + "T12:00:00");
+  const windowStartDate = new Date(anchorDate);
+  windowStartDate.setDate(windowStartDate.getDate() - 27); // inclusive: 28 days total
+  const windowStartStr = toDateStr(windowStartDate);
 
-  const startDate = new Date(startEntry.date + "T12:00:00");
-  const endDate = new Date(endEntry.date + "T12:00:00");
-  const actualDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
-  if (actualDays < 14) return null;
+  const windowWeightDates = allWeightDates.filter(d => d >= windowStartStr && d <= anchorStr);
+  if (windowWeightDates.length < 4) return null;
 
-  const weightChangeLbs = endEntry.smoothed - startEntry.smoothed;
-  // 3500 kcal per pound of body weight change (widely used approximation)
-  const caloricSurplusDeficit = (weightChangeLbs * 3500) / actualDays;
-
-  // Compute average daily calories consumed over the same period
-  const daysInRange = [];
-  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-    const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    daysInRange.push(ds);
-  }
-
+  // Calorie intake: average over logged days within the window
   let totalCalories = 0;
   let daysWithFood = 0;
-  for (const day of daysInRange) {
-    const entries = logs[day];
+  for (let i = 0; i < 28; i++) {
+    const d = new Date(windowStartDate);
+    d.setDate(d.getDate() + i);
+    const ds = toDateStr(d);
+    const entries = logs[ds];
     if (!entries || entries.length === 0) continue;
     let dayCals = 0;
     for (const entry of entries) {
@@ -192,35 +190,88 @@ function computeTDEE(smoothedWeights, logs, allFields, foods, numDays = 28) {
     totalCalories += dayCals;
     daysWithFood++;
   }
-
-  if (daysWithFood < 7) return null; // Need at least a week of food logging
+  if (daysWithFood < 7) return null;
 
   const avgDailyCalories = totalCalories / daysWithFood;
-  // TDEE = what you ate - the deficit (or + the surplus)
-  // If you lost weight, caloricSurplusDeficit is negative, so TDEE > intake
-  const tdee = avgDailyCalories - caloricSurplusDeficit;
+  let dailyWeightRate, startWeight, endWeight;
 
-  const weeklyRateLbs = (weightChangeLbs / actualDays) * 7;
+  if (method === "regression") {
+    // Fit a line through all weight entries in the window; slope = lbs/day
+    const points = windowWeightDates.map(d => ({
+      x: (new Date(d + "T12:00:00") - windowStartDate) / (1000 * 60 * 60 * 24),
+      y: weightLog[d],
+    }));
+    const n = points.length;
+    const sumX = points.reduce((s, p) => s + p.x, 0);
+    const sumY = points.reduce((s, p) => s + p.y, 0);
+    const sumXY = points.reduce((s, p) => s + p.x * p.y, 0);
+    const sumXX = points.reduce((s, p) => s + p.x * p.x, 0);
+    const denom = n * sumXX - sumX * sumX;
+    if (Math.abs(denom) < 1e-10) return null;
+    dailyWeightRate = (n * sumXY - sumX * sumY) / denom;
+    const intercept = (sumY - dailyWeightRate * sumX) / n;
+    startWeight = Math.round(intercept * 100) / 100;
+    endWeight = Math.round((intercept + dailyWeightRate * 27) * 100) / 100;
+  } else {
+    // Endpoint: EMA-smoothed weight at first and last logged dates in the window
+    const smoothed = computeSmoothedWeights(weightLog);
+    const smoothedMap = Object.fromEntries(smoothed.map(e => [e.date, e.smoothed]));
+    startWeight = smoothedMap[windowWeightDates[0]];
+    endWeight = smoothedMap[windowWeightDates[windowWeightDates.length - 1]];
+    const firstDate = new Date(windowWeightDates[0] + "T12:00:00");
+    const lastDate = new Date(windowWeightDates[windowWeightDates.length - 1] + "T12:00:00");
+    const spanDays = (lastDate - firstDate) / (1000 * 60 * 60 * 24);
+    if (spanDays < 1) return null;
+    dailyWeightRate = (endWeight - startWeight) / spanDays;
+  }
+
+  // TDEE = avg daily intake - daily caloric surplus/deficit implied by weight change
+  // 3500 kcal per pound (widely used approximation)
+  const caloricSurplusDeficit = dailyWeightRate * 3500;
+  const tdee = avgDailyCalories - caloricSurplusDeficit;
+  const weeklyRateLbs = dailyWeightRate * 7;
 
   return {
     tdee: Math.round(tdee),
     avgDailyCalories: Math.round(avgDailyCalories),
-    weightChangeLbs: Math.round(weightChangeLbs * 100) / 100,
+    weightChangeLbs: Math.round(dailyWeightRate * 27 * 100) / 100,
     weeklyRateLbs: Math.round(weeklyRateLbs * 100) / 100,
-    daysAnalyzed: Math.round(actualDays),
+    daysAnalyzed: 28,
     daysWithFoodLog: daysWithFood,
-    startWeight: startEntry.smoothed,
-    endWeight: endEntry.smoothed,
+    weightEntriesInWindow: windowWeightDates.length,
+    startWeight: startWeight != null ? Math.round(startWeight * 100) / 100 : null,
+    endWeight: endWeight != null ? Math.round(endWeight * 100) / 100 : null,
+    windowStart: windowStartStr,
+    windowEnd: anchorStr,
   };
 }
 
 function computeTDEEProgress(weightLog, logs) {
-  const weightDays = Object.keys(weightLog).length;
-  const foodDays = Object.values(logs).filter(entries => entries && entries.length > 0).length;
-  const weightNeeded = Math.max(0, 14 - weightDays);
-  const foodNeeded = Math.max(0, 7 - foodDays);
-  const ready = weightNeeded === 0 && foodNeeded === 0;
-  return { weightDays, foodDays, weightNeeded, foodNeeded, ready };
+  const allWeightDates = Object.keys(weightLog).sort();
+  if (allWeightDates.length === 0) {
+    return { weightInWindow: 0, foodInWindow: 0, weightNeeded: 4, foodNeeded: 7, ready: false };
+  }
+  const anchorStr = allWeightDates[allWeightDates.length - 1];
+  const anchorDate = new Date(anchorStr + "T12:00:00");
+  const windowStartDate = new Date(anchorDate);
+  windowStartDate.setDate(windowStartDate.getDate() - 27);
+  const windowStartStr = toDateStr(windowStartDate);
+
+  const weightInWindow = allWeightDates.filter(d => d >= windowStartStr && d <= anchorStr).length;
+  let foodInWindow = 0;
+  for (let i = 0; i < 28; i++) {
+    const d = new Date(windowStartDate);
+    d.setDate(d.getDate() + i);
+    const ds = toDateStr(d);
+    if (logs[ds] && logs[ds].length > 0) foodInWindow++;
+  }
+  return {
+    weightInWindow,
+    foodInWindow,
+    weightNeeded: Math.max(0, 4 - weightInWindow),
+    foodNeeded: Math.max(0, 7 - foodInWindow),
+    ready: weightInWindow >= 4 && foodInWindow >= 7,
+  };
 }
 
 function computePlanTargets(caloriePlan, tdee, dateStr) {
@@ -613,6 +664,7 @@ export default function MacroTracker() {
   const [symptomLog, setSymptomLog] = useState(() => loadData(STORAGE_KEYS.symptomLog, []));
   const [caloriePlan, setCaloriePlan] = useState(() => loadData(STORAGE_KEYS.caloriePlan, DEFAULT_CALORIE_PLAN));
   const [bowelLog, setBowelLog] = useState(() => loadData(STORAGE_KEYS.bowelLog, []));
+  const [appSettings, setAppSettings] = useState(() => loadData(STORAGE_KEYS.appSettings, { tdeeMethod: "endpoint" }));
 
   useEffect(() => saveData(STORAGE_KEYS.foods, foods), [foods]);
   useEffect(() => saveData(STORAGE_KEYS.logs, logs), [logs]);
@@ -625,6 +677,7 @@ export default function MacroTracker() {
   useEffect(() => saveData(STORAGE_KEYS.symptomLog, symptomLog), [symptomLog]);
   useEffect(() => saveData(STORAGE_KEYS.caloriePlan, caloriePlan), [caloriePlan]);
   useEffect(() => saveData(STORAGE_KEYS.bowelLog, bowelLog), [bowelLog]);
+  useEffect(() => saveData(STORAGE_KEYS.appSettings, appSettings), [appSettings]);
 
   const allFields = [...fields, ...customFields];
   const enabledFields = allFields.filter(f => f.enabled);
@@ -654,8 +707,7 @@ export default function MacroTracker() {
   const viewTotals = computeTotals(viewEntries);
 
   // Compute calorie plan targets for the viewed date
-  const smoothedForPlan = computeSmoothedWeights(weightLog);
-  const tdeeForPlan = computeTDEE(smoothedForPlan, logs, allFields, foods, 28);
+  const tdeeForPlan = computeTDEE(weightLog, logs, allFields, foods, appSettings.tdeeMethod);
   const planTargets = tdeeForPlan ? computePlanTargets(caloriePlan, tdeeForPlan.tdee, viewDate) : null;
   const weeklyPlan = tdeeForPlan ? computeWeeklyPlan(caloriePlan, tdeeForPlan.tdee, viewDate, logs, foods, allFields) : null;
 
@@ -1076,7 +1128,7 @@ export default function MacroTracker() {
 
         {/* ═══ LOG TAB ═══ */}
         {/* ═══ WEIGHT TAB ═══ */}
-        {tab === "weight" && <WeightPanel weightLog={weightLog} setWeightLog={setWeightLog} logs={logs} foods={foods} allFields={allFields} />}
+        {tab === "weight" && <WeightPanel weightLog={weightLog} setWeightLog={setWeightLog} logs={logs} foods={foods} allFields={allFields} appSettings={appSettings} />}
 
         {/* ═══ SYMPTOMS TAB ═══ */}
         {tab === "symptoms" && <SymptomsPanel symptomLog={symptomLog} setSymptomLog={setSymptomLog} />}
@@ -1085,7 +1137,7 @@ export default function MacroTracker() {
         {tab === "bowel" && <BowelPanel bowelLog={bowelLog} setBowelLog={setBowelLog} />}
 
         {/* ═══ STATS TAB ═══ */}
-        {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} goals={goals} weightLog={weightLog} allFields={allFields} caloriePlan={caloriePlan} weeklyPlan={weeklyPlan} tdeeForPlan={tdeeForPlan} />}
+        {tab === "stats" && <StatsPanel logs={logs} foods={foods} enabledFields={enabledFields} computeTotals={computeTotals} goals={goals} weightLog={weightLog} allFields={allFields} caloriePlan={caloriePlan} weeklyPlan={weeklyPlan} tdeeForPlan={tdeeForPlan} appSettings={appSettings} />}
 
         {/* ═══ SETTINGS TAB ═══ */}
         {tab === "settings" && (
@@ -1104,11 +1156,11 @@ export default function MacroTracker() {
                     </div>
                     <div style={{ display: "flex", gap: 12, fontSize: 12 }}>
                       <span style={{ color: prog.weightNeeded === 0 ? "var(--success)" : "var(--text)" }}>
-                        Weight: <span style={{ fontWeight: 700 }}>{prog.weightDays}/14</span>
+                        Weight: <span style={{ fontWeight: 700 }}>{prog.weightInWindow}/4</span>
                         {prog.weightNeeded > 0 && <span style={{ color: "var(--accent)" }}> ({prog.weightNeeded} more)</span>}
                       </span>
                       <span style={{ color: prog.foodNeeded === 0 ? "var(--success)" : "var(--text)" }}>
-                        Food: <span style={{ fontWeight: 700 }}>{prog.foodDays}/7</span>
+                        Food: <span style={{ fontWeight: 700 }}>{prog.foodInWindow}/7</span>
                         {prog.foodNeeded > 0 && <span style={{ color: "var(--accent)" }}> ({prog.foodNeeded} more)</span>}
                       </span>
                     </div>
@@ -1120,6 +1172,32 @@ export default function MacroTracker() {
                   Estimated TDEE: <span style={{ fontWeight: 700, color: "var(--text)" }}>{tdeeForPlan.tdee} kcal/day</span>
                 </div>
               )}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--text-muted)", fontFamily: "var(--font-body)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  Weight Change Method
+                </label>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 8, lineHeight: 1.5 }}>
+                  <strong style={{ color: "var(--text)" }}>Endpoint (EMA)</strong> — compares EMA-smoothed weight at the first and last logged dates in the 28-day window. Simple and intuitive, but sensitive to what you happened to weigh on those specific days.{" "}
+                  <strong style={{ color: "var(--text)" }}>Linear Regression</strong> — fits a trend line through all weight entries in the window and uses its slope. More robust to irregular logging and single-day fluctuations.
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {[{ key: "endpoint", label: "Endpoint (EMA)" }, { key: "regression", label: "Linear Regression" }].map(opt => (
+                    <button
+                      key={opt.key}
+                      onClick={() => setAppSettings({ ...appSettings, tdeeMethod: opt.key })}
+                      style={{
+                        flex: 1, padding: "8px 10px", borderRadius: 8, border: "2px solid",
+                        borderColor: appSettings.tdeeMethod === opt.key ? "var(--accent)" : "var(--border)",
+                        background: appSettings.tdeeMethod === opt.key ? "var(--accent)" : "var(--input-bg)",
+                        color: appSettings.tdeeMethod === opt.key ? "#fff" : "var(--text)",
+                        fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "var(--font-body)",
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div style={{ marginBottom: 12 }}>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: "var(--text-muted)", fontFamily: "var(--font-body)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
                   Weekly Rate (lbs/week)
@@ -2294,7 +2372,7 @@ function EditEntryModal({ entry, date, foods, enabledFields, allFields, onSave, 
 
 // ─── Stats Panel ─────────────────────────────────────────────────
 
-function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLog, allFields, caloriePlan, weeklyPlan, tdeeForPlan }) {
+function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLog, allFields, caloriePlan, weeklyPlan, tdeeForPlan, appSettings }) {
   const [range, setRange] = useState("7");
   const [expandedWeeks, setExpandedWeeks] = useState({});
   const sortedDays = Object.keys(logs).sort((a, b) => b.localeCompare(a));
@@ -2394,84 +2472,105 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLo
 
           {/* TDEE Analysis */}
           {(() => {
-            const smoothed = computeSmoothedWeights(weightLog);
-            const tdeeData = computeTDEE(smoothed, logs, allFields, foods, 28);
-            if (!tdeeData) return (
-              <div style={{ background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginTop: 16, marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+            if (!tdeeForPlan) {
+              const prog = computeTDEEProgress(weightLog, logs);
+              return (
+                <div style={{ background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginTop: 16, marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", marginBottom: 8 }}>
+                    Estimated TDEE
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>
+                    Log weight and food to unlock your TDEE estimate. Need at least 4 weight entries and 7 food logs within any 28-day window.
+                  </div>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <div style={{ flex: 1, background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                      <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 4 }}>Weight Logs</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-heading)", color: prog.weightNeeded === 0 ? "var(--success)" : "var(--text)" }}>
+                        {prog.weightInWindow}<span style={{ fontSize: 12, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>/4</span>
+                      </div>
+                      {prog.weightNeeded > 0 && <div style={{ fontSize: 11, color: "var(--accent)", marginTop: 2 }}>{prog.weightNeeded} more needed</div>}
+                      {prog.weightNeeded === 0 && <div style={{ fontSize: 11, color: "var(--success)", marginTop: 2 }}>Ready</div>}
+                    </div>
+                    <div style={{ flex: 1, background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                      <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 4 }}>Food Logs</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-heading)", color: prog.foodNeeded === 0 ? "var(--success)" : "var(--text)" }}>
+                        {prog.foodInWindow}<span style={{ fontSize: 12, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>/7</span>
+                      </div>
+                      {prog.foodNeeded > 0 && <div style={{ fontSize: 11, color: "var(--accent)", marginTop: 2 }}>{prog.foodNeeded} more needed</div>}
+                      {prog.foodNeeded === 0 && <div style={{ fontSize: 11, color: "var(--success)", marginTop: 2 }}>Ready</div>}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            const gaining = tdeeForPlan.weeklyRateLbs > 0.05;
+            const losing = tdeeForPlan.weeklyRateLbs < -0.05;
+            const weeklyRate = caloriePlan.weeklyRate || 0;
+            const targetCalories = tdeeForPlan.tdee + Math.round(weeklyRate * 500);
+            const windowLabel = `${new Date(tdeeForPlan.windowStart + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${new Date(tdeeForPlan.windowEnd + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+            const methodLabel = (appSettings?.tdeeMethod ?? "endpoint") === "regression" ? "Linear Regression" : "Endpoint (EMA)";
+            return (
+              <div style={{ background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginTop: 16, marginBottom: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", marginBottom: 8 }}>
                   Estimated TDEE
                 </div>
-                {(() => {
-                  const prog = computeTDEEProgress(weightLog, logs);
-                  return (
-                    <div>
-                      <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>
-                        Log weight and food daily to unlock your TDEE estimate.
-                      </div>
-                      <div style={{ display: "flex", gap: 10 }}>
-                        <div style={{ flex: 1, background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
-                          <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 4 }}>Weight Logs</div>
-                          <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-heading)", color: prog.weightNeeded === 0 ? "var(--success)" : "var(--text)" }}>
-                            {prog.weightDays}<span style={{ fontSize: 12, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>/14</span>
-                          </div>
-                          {prog.weightNeeded > 0 && <div style={{ fontSize: 11, color: "var(--accent)", marginTop: 2 }}>{prog.weightNeeded} more needed</div>}
-                          {prog.weightNeeded === 0 && <div style={{ fontSize: 11, color: "var(--success)", marginTop: 2 }}>Ready</div>}
-                        </div>
-                        <div style={{ flex: 1, background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
-                          <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 4 }}>Food Logs</div>
-                          <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-heading)", color: prog.foodNeeded === 0 ? "var(--success)" : "var(--text)" }}>
-                            {prog.foodDays}<span style={{ fontSize: 12, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>/7</span>
-                          </div>
-                          {prog.foodNeeded > 0 && <div style={{ fontSize: 11, color: "var(--accent)", marginTop: 2 }}>{prog.foodNeeded} more needed</div>}
-                          {prog.foodNeeded === 0 && <div style={{ fontSize: 11, color: "var(--success)", marginTop: 2 }}>Ready</div>}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            );
-            const gaining = tdeeData.weeklyRateLbs > 0.05;
-            const losing = tdeeData.weeklyRateLbs < -0.05;
-            const maintaining = !gaining && !losing;
-            return (
-              <div style={{ background: "var(--card-bg)", borderRadius: 14, padding: "16px", marginTop: 16, marginBottom: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-                <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--accent)", marginBottom: 12 }}>
-                  Estimated TDEE
+                {/* Window metadata */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, padding: "8px 10px", background: "var(--input-bg)", borderRadius: 8 }}>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                    <span style={{ fontWeight: 600, color: "var(--text)" }}>{windowLabel}</span>
+                    <span style={{ marginLeft: 6 }}>· 28 days</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", textAlign: "right" }}>
+                    <span>{tdeeForPlan.weightEntriesInWindow} weight</span>
+                    <span style={{ margin: "0 4px" }}>·</span>
+                    <span>{tdeeForPlan.daysWithFoodLog} food entries</span>
+                  </div>
                 </div>
                 {/* Big TDEE number */}
                 <div style={{ textAlign: "center", marginBottom: 16 }}>
                   <div style={{ fontSize: 36, fontWeight: 700, fontFamily: "var(--font-heading)", color: "var(--text)" }}>
-                    {tdeeData.tdee}
+                    {tdeeForPlan.tdee}
                     <span style={{ fontSize: 14, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)", marginLeft: 4 }}>kcal/day</span>
                   </div>
-                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
-                    Estimated maintenance calories
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                    Estimated maintenance · {methodLabel}
                   </div>
                 </div>
                 {/* Details grid */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                  <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Start Weight</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeForPlan.startWeight} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs</span></div>
+                  </div>
+                  <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>End Weight</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeForPlan.endWeight} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs</span></div>
+                  </div>
                   <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Avg Intake</div>
-                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeData.avgDailyCalories} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>kcal</span></div>
+                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeForPlan.avgDailyCalories} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>kcal</span></div>
                   </div>
                   <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
                     <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Weekly Rate</div>
                     <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)", color: losing ? "var(--success)" : gaining ? "#EF4444" : "var(--text)" }}>
-                      {tdeeData.weeklyRateLbs > 0 ? "+" : ""}{tdeeData.weeklyRateLbs} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs/wk</span>
+                      {tdeeForPlan.weeklyRateLbs > 0 ? "+" : ""}{tdeeForPlan.weeklyRateLbs} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs/wk</span>
                     </div>
                   </div>
-                  <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Smoothed Start</div>
-                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeData.startWeight} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs</span></div>
-                  </div>
-                  <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "10px 12px" }}>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px" }}>Smoothed Now</div>
-                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-heading)" }}>{tdeeData.endWeight} <span style={{ fontSize: 11, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)" }}>lbs</span></div>
-                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 10, textAlign: "center" }}>
-                  Based on {tdeeData.daysAnalyzed} days of weight data & {tdeeData.daysWithFoodLog} days of food logs
+                {/* Recommended intake */}
+                <div style={{ background: "var(--input-bg)", borderRadius: 10, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: 4 }}>
+                    Recommended Daily Intake
+                  </div>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                    <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-heading)", color: "var(--accent)" }}>
+                      {targetCalories}
+                      <span style={{ fontSize: 12, fontWeight: 400, fontFamily: "var(--font-body)", color: "var(--text-muted)", marginLeft: 4 }}>kcal/day</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      {weeklyRate === 0 ? "maintenance" : `${weeklyRate > 0 ? "+" : ""}${weeklyRate} lbs/wk goal`}
+                    </div>
+                  </div>
                 </div>
               </div>
             );
@@ -2671,7 +2770,7 @@ function StatsPanel({ logs, foods, enabledFields, computeTotals, goals, weightLo
 
 // ─── Weight Panel ────────────────────────────────────────────────
 
-function WeightPanel({ weightLog, setWeightLog, logs, foods, allFields }) {
+function WeightPanel({ weightLog, setWeightLog, logs, foods, allFields, appSettings }) {
   const [weight, setWeight] = useState("");
   const [editingDay, setEditingDay] = useState(null);
   const [editWeight, setEditWeight] = useState("");
@@ -2703,7 +2802,7 @@ function WeightPanel({ weightLog, setWeightLog, logs, foods, allFields }) {
   }
 
   // Compute TDEE for display on this panel too
-  const tdeeData = computeTDEE(smoothed, logs, allFields, foods, 28);
+  const tdeeData = computeTDEE(weightLog, logs, allFields, foods, appSettings?.tdeeMethod ?? "endpoint");
 
   return (
     <>
