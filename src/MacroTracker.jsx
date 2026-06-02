@@ -387,41 +387,40 @@ function computeWeeklyPlan(caloriePlan, tdee, viewDate, logs, foods, allFields) 
     return cals;
   });
 
-  // Determine which days are "past" (before viewDate) and which are "remaining" (viewDate onward)
-  const viewIdx = weekDays.indexOf(viewDate);
-  const pastDays = viewIdx >= 0 ? weekDays.slice(0, viewIdx) : [];
-  const remainingDays = viewIdx >= 0 ? weekDays.slice(viewIdx) : weekDays;
+  // Split by today (not viewDate): consumed = all days through today, future = after today.
+  // This makes today's real-time calories flow into the remaining budget for future days.
+  const todayIdx = weekDays.indexOf(today);
+  const consumedDays = todayIdx >= 0
+    ? weekDays.slice(0, todayIdx + 1)
+    : (today > weekDays[6] ? weekDays : []);
+  const futureDays = todayIdx >= 0
+    ? weekDays.slice(todayIdx + 1)
+    : (today < weekDays[0] ? weekDays : []);
 
-  const pastActualCals = pastDays.reduce((s, day) => {
+  // pastActualCals includes today's real-time actual so the UI updates as you log food
+  const pastActualCals = consumedDays.reduce((s, day) => {
     const idx = weekDays.indexOf(day);
     return s + actuals[idx];
   }, 0);
 
   const remainingBudget = weeklyCalTarget - pastActualCals;
 
-  // Get the raw planned cals for remaining days
-  // Manual day types are fixed — subtract them from budget and only scale relative types
-  const remainingRawTargets = remainingDays.map(day => {
-    const idx = weekDays.indexOf(day);
-    return rawTargets[idx];
-  });
-  const manualFixedCals = remainingRawTargets.filter(t => t.isManual).reduce((s, t) => s + t.calories, 0);
-  const relativeRawSum = remainingRawTargets.filter(t => !t.isManual).reduce((s, t) => s + t.calories, 0);
+  // Only future days (after today) get scaled targets
+  const futureRawTargets = futureDays.map(day => rawTargets[weekDays.indexOf(day)]);
+  const manualFixedCals = futureRawTargets.filter(t => t.isManual).reduce((s, t) => s + t.calories, 0);
+  const relativeRawSum = futureRawTargets.filter(t => !t.isManual).reduce((s, t) => s + t.calories, 0);
   const budgetForRelative = remainingBudget - manualFixedCals;
 
-  // Proportional scale factor — only applies to relative day types
   const scaleFactor = relativeRawSum > 0 ? budgetForRelative / relativeRawSum : 1;
 
-  // Compute adjusted targets for each remaining day
   const protein = caloriePlan.protein || 150;
   const fat = caloriePlan.fat || 65;
   const adjustedTargets = {};
 
-  remainingDays.forEach(day => {
+  futureDays.forEach(day => {
     const idx = weekDays.indexOf(day);
     const raw = rawTargets[idx];
 
-    // Manual day types don't get scaled — they keep their absolute values
     if (raw.isManual) {
       adjustedTargets[day] = {
         calories: raw.calories,
@@ -438,16 +437,11 @@ function computeWeeklyPlan(caloriePlan, tdee, viewDate, logs, foods, allFields) 
     }
 
     const adjCals = Math.round(raw.calories * scaleFactor);
-
-    // Scale protein and fat multipliers proportionally too
-    const pMult = raw.protein / protein; // recover the day-type multiplier
+    const pMult = raw.protein / protein;
     const fMult = raw.fat / fat;
     const adjProtein = Math.round(protein * pMult * scaleFactor);
     const adjFat = Math.round(fat * fMult * scaleFactor);
-
-    // But floor protein at 80% of base to prevent going too low
     const finalProtein = Math.max(Math.round(protein * pMult * 0.8), adjProtein > 0 ? adjProtein : 0);
-    // Recalculate fat from remaining after protein
     const finalFat = Math.round(fat * fMult * scaleFactor);
     const proteinCals = finalProtein * 4;
     const fatCals = finalFat * 9;
@@ -465,6 +459,18 @@ function computeWeeklyPlan(caloriePlan, tdee, viewDate, logs, foods, allFields) 
     };
   });
 
+  // viewDayTargets: today uses its raw plan target; future days use their adjusted target;
+  // past days use their raw target (already completed).
+  let viewDayTargets = null;
+  if (viewDate === today && todayIdx >= 0) {
+    viewDayTargets = rawTargets[todayIdx];
+  } else if (viewDate > today) {
+    viewDayTargets = adjustedTargets[viewDate] || null;
+  } else {
+    const viewIdx = weekDays.indexOf(viewDate);
+    viewDayTargets = viewIdx >= 0 ? rawTargets[viewIdx] : null;
+  }
+
   return {
     weekDays,
     monday,
@@ -473,10 +479,10 @@ function computeWeeklyPlan(caloriePlan, tdee, viewDate, logs, foods, allFields) 
     weeklyCalTarget,
     pastActualCals,
     remainingBudget,
-    remainingDays: remainingDays.length,
+    remainingDays: futureDays.length,
     scaleFactor,
     adjustedTargets,
-    viewDayTargets: adjustedTargets[viewDate] || null,
+    viewDayTargets,
   };
 }
 
