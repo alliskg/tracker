@@ -2241,7 +2241,7 @@ function MealGroupedEntries({ entries, foods, allFields, enabledFields, onRemove
                   {hasPlanned && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 6, background: "#DBEAFE", color: "#1D4ED8" }}>PLANNED</span>}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  {enabledFields.slice(0, 4).map(f => (
+                  {enabledFields.filter(f => ["calories", "protein", "fat", "fiber"].includes(f.key)).map(f => (
                     groupTotals[f.key] > 0 ? (
                       <span key={f.key}><span style={{ fontWeight: 600, color: "var(--text)" }}>{Math.round(groupTotals[f.key] * 10) / 10}</span>{f.unit} {f.label}</span>
                     ) : null
